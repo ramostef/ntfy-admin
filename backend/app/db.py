@@ -2,7 +2,10 @@ import sqlite3
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parents[1] / "data" / "admin.db"
-
+def get_connection():
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+    return connection
 ROLES = (
     "superadmin",
     "account_admin",
@@ -56,6 +59,17 @@ def initialize_database():
         connection.execute("""
             CREATE INDEX IF NOT EXISTS idx_audit_events_created_at
             ON audit_events(created_at)
+        """)
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS demo_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                role TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'Démo',
+                created_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            )
         """)
 
         connection.commit()

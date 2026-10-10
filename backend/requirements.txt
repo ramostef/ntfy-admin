@@ -1,2 +1,5 @@
 fastapi
 uvicorn[standard]
+pwdlib[argon2]
+itsdangerous
+python-dotenv
