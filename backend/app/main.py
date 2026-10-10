@@ -1,5 +1,11 @@
 
 import os
+import subprocess
+import re
+import json
+from urllib.error import URLError
+from urllib.request import urlopen
+
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -67,6 +73,26 @@ def home():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/ntfy/health")
+def ntfy_health(_admin: bool = Depends(require_admin)):
+    base_url = os.getenv(
+        "NTFY_BASE_URL",
+        "https://ntfy-pc-home.duckdns.org",
+    ).rstrip("/")
+
+    try:
+        with urlopen(f"{base_url}/v1/health", timeout=3) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        if response.status == 200 and data.get("healthy") is True:
+            return {"status": "online"}
+
+    except (URLError, TimeoutError, OSError, ValueError):
+        pass
+
+    return {"status": "offline"}
 
 
 @app.post("/login")
@@ -155,3 +181,67 @@ def create_account(
         if "UNIQUE constraint failed" in str(exc):
             raise HTTPException(status_code=409, detail="Ce compte existe déjà")
         raise
+
+
+@app.get("/ntfy/accounts")
+def list_real_ntfy_accounts(_admin: bool = Depends(require_admin)):
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "/usr/local/sbin/ntfy-admin-list-users"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(
+            status_code=503,
+            detail="Délai dépassé lors de la lecture des comptes ntfy",
+        )
+    except OSError:
+        raise HTTPException(
+            status_code=503,
+            detail="Impossible de lancer la commande de lecture ntfy",
+        )
+
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=503,
+            detail="Impossible de lire les comptes ntfy",
+        )
+
+    accounts = []
+    current = None
+
+    for line in result.stdout.splitlines():
+        match = re.match(
+            r"^user (.+) \(role: ([^,]+), tier: ([^)]+)\)$",
+            line.strip(),
+        )
+
+        if match:
+            if current is not None:
+                accounts.append(current)
+
+            current = {
+                "username": match.group(1),
+                "role": match.group(2),
+                "tier": match.group(3),
+                "permissions": [],
+            }
+            continue
+
+        if current is None:
+            continue
+
+        permission = line.strip().removeprefix("- ").strip()
+        if permission:
+            current["permissions"].append(permission)
+
+    if current is not None:
+        accounts.append(current)
+
+    return [
+    account for account in accounts
+    if account["username"] != "*"
+]

@@ -17,12 +17,11 @@ import {
 import { useEffect, useState } from "react";
 import "./App.css";
 
-type DemoAccount = {
-  id: number;
+type NtfyAccount = {
   username: string;
   role: string;
-  status: string;
-  created_at: string;
+  tier: string;
+  permissions: string[];
 };
 
 const sections = [
@@ -47,17 +46,14 @@ export default function App() {
   const [apiStatus, setApiStatus] = useState<
     "checking" | "online" | "offline"
   >("checking");
-
-const [showAccountForm, setShowAccountForm] = useState(false);
-  const [newUsername, setNewUsername] = useState("");
-  const [newRole, setNewRole] = useState("Téléphone");
-  const [accounts, setAccounts] = useState<DemoAccount[]>([]);
+  const [ntfyStatus, setNtfyStatus] = useState<
+  "checking" | "online" | "offline"
+  >("checking");
+  const [accounts, setAccounts] = useState<NtfyAccount[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [accountsError, setAccountsError] = useState("");
-  const [savingAccount, setSavingAccount] = useState(false);
-  const [accountMessage, setAccountMessage] = useState("");
   const allAccounts = accounts;
-  
+
   useEffect(() => {
     let mounted = true;
 
@@ -167,18 +163,61 @@ const [showAccountForm, setShowAccountForm] = useState(false);
     };
   }, []);
 
+
+useEffect(() => {
+  if (!authenticated) {
+    setNtfyStatus("checking");
+    return;
+  }
+
+  let mounted = true;
+
+  async function checkNtfy() {
+    try {
+      const response = await fetch("/api/ntfy/health", {
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error("Vérification ntfy impossible");
+      }
+
+      const data: { status: string } = await response.json();
+
+      if (mounted) {
+        setNtfyStatus(data.status === "online" ? "online" : "offline");
+      }
+    } catch {
+      if (mounted) {
+        setNtfyStatus("offline");
+      }
+    }
+  }
+
+  void checkNtfy();
+  const interval = window.setInterval(() => {
+    void checkNtfy();
+  }, 15000);
+
+  return () => {
+    mounted = false;
+    window.clearInterval(interval);
+  };
+}, [authenticated]);
+
+
   useEffect(() => {
     let mounted = true;
 
     async function loadAccounts() {
       try {
-        const response = await fetch("/api/accounts", {
+        const response = await fetch("/api/ntfy/accounts", {
           cache: "no-store",
         });
         if (!response.ok) {
           throw new Error("Impossible de charger les comptes.");
         }
-        const data: DemoAccount[] = await response.json();
+        const data: NtfyAccount[] = await response.json();
         if (mounted) {
           setAccounts(data);
           setAccountsError("");
@@ -198,7 +237,7 @@ const [showAccountForm, setShowAccountForm] = useState(false);
     };
   }, [authenticated]);
 
-	
+
   if (authChecking) {
     return (
       <div className="login-screen">
@@ -276,7 +315,7 @@ const [showAccountForm, setShowAccountForm] = useState(false);
       <main className="main-content">
         <header className="topbar">
           <div className="breadcrumb"><span>Administration</span> / {active}</div>
-         
+
           <div className="profile">
             <div className="avatar">A</div>
             <div>
@@ -314,8 +353,26 @@ const [showAccountForm, setShowAccountForm] = useState(false);
           {active === "Vue d’ensemble" ? (
             <>
               <div className="metrics-grid">
-                <Metric icon={<Radio />} label="Serveur ntfy" value="À connecter" note="Connexion non configurée" />
-                <Metric icon={<Users />} label="Comptes" value={String(accounts.length)} note="Valeur indicative, non vérifiée" />
+
+<Metric
+  icon={<Radio />}
+  label="Serveur ntfy"
+  value={
+    ntfyStatus === "checking"
+      ? "Vérification…"
+      : ntfyStatus === "online"
+        ? "En ligne"
+        : "Hors ligne"
+  }
+  note="Disponibilité du serveur"
+/>
+<Metric
+  icon={<Users />}
+  label="Comptes"
+  value={String(accounts.length)}
+  note="Comptes récupérés depuis ntfy"
+/>
+
                 <Metric icon={<Smartphone />} label="Téléphones" value="À vérifier" note="Inventaire non connecté" />
                 <Metric icon={<Activity />} label="API admin" value="En ligne" note="Interface de test locale" />
               </div>
@@ -333,7 +390,19 @@ const [showAccountForm, setShowAccountForm] = useState(false);
                 <div className="service-row">
                   <div className="service-icon"><Radio size={19} /></div>
                   <div className="service-info"><strong>Serveur ntfy</strong><span>ntfy-pc-home.duckdns.org</span></div>
-                  <span className="service-state pending">Non connecté</span>
+
+<span
+  className={`service-state ${
+    ntfyStatus === "online" ? "" : "pending"
+  }`}
+>
+  {ntfyStatus === "checking"
+    ? "Vérification…"
+    : ntfyStatus === "online"
+      ? "En ligne"
+      : "Hors ligne"}
+</span>
+
                 </div>
                 <div className="service-row">
                   <div className="service-icon"><ShieldCheck size={19} /></div>
@@ -347,109 +416,17 @@ const [showAccountForm, setShowAccountForm] = useState(false);
                 <div><strong>Base du projet créée</strong><p>Le frontend et le backend sont en place. Les données affichées ici ne constituent pas encore un inventaire réel du serveur.</p></div>
               </div>
             </>
-         
+
           ) : active === "Comptes" ? (
             <section className="panel">
               <div className="panel-heading">
                 <div>
                   <h2>Gestion des comptes</h2>
-                  <p>Vue de démonstration — données non connectées au serveur</p>
+                  <p>Comptes réels récupérés depuis le serveur ntfy</p>
                 </div>
-                <span className="tag">PROTOTYPE</span>
+                <span className="tag">NTFY</span>
               </div>
 
-              <button
-                className="add-account-button"
-                onClick={() => {
-                  setShowAccountForm(!showAccountForm);
-                  setAccountMessage("");
-                }}
-              >
-                {showAccountForm ? "Annuler" : "+ Ajouter un compte"}
-              </button>
-
-              {showAccountForm && (
-                <form
-                  className="account-form"
-                  onSubmit={async (event) => {
-                    event.preventDefault();
-                    const username = newUsername.trim();
-
-                    if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
-                      setAccountMessage(
-                        "Utilise uniquement des lettres, chiffres, tirets ou underscores."
-                      );
-                      return;
-                    }
-
-                    setSavingAccount(true);
-                    setAccountMessage("");
-
-                    try {
-                      const response = await fetch("/api/accounts", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          username,
-                          role: newRole,
-                        }),
-                      });
-
-                      const result = await response.json();
-
-                      if (!response.ok) {
-                        throw new Error(
-                          result.detail || "Impossible d’ajouter le compte."
-                        );
-                      }
-
-                      setAccounts((current) => [...current, result]);
-                      setNewUsername("");
-                      setNewRole("Téléphone");
-                      setAccountMessage("Compte enregistré dans SQLite.");
-                      setShowAccountForm(false);
-                    } catch (error) {
-                      setAccountMessage(
-                        error instanceof Error
-                          ? error.message
-                          : "Une erreur est survenue."
-                      );
-                    } finally {
-                      setSavingAccount(false);
-                    }
-                  }}
-                >
-                  <label htmlFor="new-username">Nom d’utilisateur</label>
-                  <input
-                    id="new-username"
-                    value={newUsername}
-                    onChange={(event) => setNewUsername(event.target.value)}
-                    placeholder="Ex. tel022"
-                    required
-                  />
-
-                  <label htmlFor="new-role">Rôle</label>
-                  <select
-                    id="new-role"
-                    value={newRole}
-                    onChange={(event) => setNewRole(event.target.value)}
-                  >
-                    <option>Téléphone</option>
-                    <option>Administrateur</option>
-                    <option>Observateur</option>
-                  </select>
-
-                  <button
-                    type="submit"
-                    className="add-account-button"
-                    disabled={savingAccount}
-                  >
-                    {savingAccount ? "Enregistrement…" : "Ajouter"}
-                  </button>
-                </form>
-              )}
-
-              {accountMessage && <p role="status">{accountMessage}</p>}
               {accountsError && <p role="alert">{accountsError}</p>}
               {accountsLoading && <p>Chargement des comptes…</p>}
 
@@ -461,27 +438,80 @@ const [showAccountForm, setShowAccountForm] = useState(false);
                 onChange={(event) => setAccountSearch(event.target.value)}
               />
 
-              {allAccounts
-                .filter((account) =>
-                  `${account.username} ${account.role} ${account.status}`
-                    .toLowerCase()
-                    .includes(accountSearch.toLowerCase())
-                )
-                .map((account) => (
-                  <div className="service-row" key={account.username}>
-                    <div className="service-icon">
-                      <Users size={19} />
-                    </div>
-                    <div className="service-info">
-                      <strong>{account.username}</strong>
-                      <span>{account.role}</span>
-                    </div>
-                    <span className="service-state pending">
-                      {account.status}
-                    </span>
-                  </div>
-                ))}
-            </section>
+
+{allAccounts
+  .filter((account) =>
+    `${account.username} ${account.role} ${account.permissions.join(" ")}`
+      .toLowerCase()
+      .includes(accountSearch.toLowerCase())
+  )
+  .map((account) => (
+    <div className="account-card" key={account.username}>
+      <div className="account-card-header">
+        <div className="service-icon">
+          {account.role === "admin" ? (
+            <ShieldCheck size={20} />
+          ) : (
+            <Smartphone size={20} />
+          )}
+        </div>
+
+        <div className="service-info">
+          <strong>{account.username}</strong>
+          <span>
+            {account.role === "admin"
+              ? "Administrateur"
+              : account.role === "anonymous"
+                ? "Accès anonyme"
+                : "Compte utilisateur"}
+          </span>
+        </div>
+
+        <span
+          className={`account-role ${
+            account.role === "admin" ? "account-role-admin" : ""
+          }`}
+        >
+          {account.role}
+        </span>
+      </div>
+
+      <div className="account-permissions">
+        <strong>Permissions</strong>
+
+        {account.permissions.map((permission, index) => {
+          const isWrite = permission.includes("read-write");
+          const isRead = permission.includes("read-only");
+
+          return (
+            <div className="permission-row" key={`${account.username}-${index}`}>
+              <span
+                className={`permission-badge ${
+                  isWrite
+                    ? "permission-write"
+                    : isRead
+                      ? "permission-read"
+                      : "permission-neutral"
+                }`}
+              >
+                {isWrite
+                  ? "Lecture-écriture"
+                  : isRead
+                    ? "Lecture seule"
+                    : "Information"}
+              </span>
+
+              <span className="permission-description">
+                {permission}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  ))}
+
+      </section>
           ) : (
             <section className="panel placeholder">
 
