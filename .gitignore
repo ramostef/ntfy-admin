@@ -1,0 +1,26 @@
+# Secrets et variables locales
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# React / Node
+node_modules/
+dist/
+build/
+
+# Bases de données et sauvegardes locales
+*.db
+*.sqlite
+*.sqlite3
+backups/
+
+# Éditeurs et systèmes
+.vscode/
+.idea/
+.DS_Store
