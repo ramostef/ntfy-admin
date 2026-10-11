@@ -245,3 +245,141 @@ def list_real_ntfy_accounts(_admin: bool = Depends(require_admin)):
     account for account in accounts
     if account["username"] != "*"
 ]
+
+
+# --- Gestion des comptes ntfy réels ---
+
+class NtfyAccountCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=32, pattern=r"^[a-zA-Z0-9_-]+$")
+    password: str = Field(min_length=12, max_length=1024)
+    role: str = Field(default="user", pattern=r"^(user|admin)$")
+
+
+class NtfyPasswordChange(BaseModel):
+    password: str = Field(min_length=12, max_length=1024)
+
+
+class NtfyRoleChange(BaseModel):
+    role: str = Field(pattern=r"^(user|admin)$")
+
+
+class NtfyPermissionChange(BaseModel):
+    topic: str = Field(min_length=1, max_length=64)
+    permission: str = Field(pattern=r"^(read-write|read-only|write-only|deny)$")
+
+
+def run_ntfy_manage(args: list[str], password: str | None = None):
+    if password is not None and ("\n" in password or "\r" in password):
+        raise HTTPException(status_code=422, detail="Mot de passe invalide")
+
+    command = [
+        "sudo", "-n", "/usr/local/sbin/ntfy-admin-manage", *args
+    ]
+
+    try:
+        result = subprocess.run(
+            command,
+            input=(password + "\n") if password is not None else None,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=503, detail="Opération ntfy trop longue")
+    except OSError:
+        raise HTTPException(status_code=503, detail="Commande ntfy indisponible")
+
+    if result.returncode != 0:
+        # Ne pas exposer les détails internes de la commande au navigateur.
+        raise HTTPException(
+            status_code=400,
+            detail="Opération refusée ou impossible. Vérifie le nom et les paramètres.",
+        )
+
+    return {"ok": True, "message": "Opération effectuée"}
+
+
+def validate_managed_username(username: str):
+    if (
+        not re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", username)
+        or username == "admin"
+        or username == "*"
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Nom de compte invalide ou compte protégé",
+        )
+
+
+def validate_managed_topic(topic: str):
+    if topic != "tous-les-telephones" and not re.fullmatch(r"tel-[0-9]{3}", topic):
+        raise HTTPException(
+            status_code=400,
+            detail="Sujet non autorisé par le tableau de bord",
+        )
+
+
+@app.post("/ntfy/accounts", status_code=201)
+def create_ntfy_account(
+    data: NtfyAccountCreate,
+    _admin: bool = Depends(require_admin),
+):
+    username = data.username.strip()
+    validate_managed_username(username)
+
+    if data.role == "admin":
+        # Création d'un administrateur possible uniquement par action explicite.
+        pass
+
+    result = run_ntfy_manage(
+        ["add", username, data.role],
+        password=data.password,
+    )
+
+    return {"username": username, "role": data.role, **result}
+
+
+@app.delete("/ntfy/accounts/{username}")
+def delete_ntfy_account(
+    username: str,
+    _admin: bool = Depends(require_admin),
+):
+    validate_managed_username(username)
+    return run_ntfy_manage(["delete", username])
+
+
+@app.put("/ntfy/accounts/{username}/password")
+def change_ntfy_password(
+    username: str,
+    data: NtfyPasswordChange,
+    _admin: bool = Depends(require_admin),
+):
+    validate_managed_username(username)
+    return run_ntfy_manage(
+        ["change-pass", username],
+        password=data.password,
+    )
+
+
+@app.put("/ntfy/accounts/{username}/role")
+def change_ntfy_role(
+    username: str,
+    data: NtfyRoleChange,
+    _admin: bool = Depends(require_admin),
+):
+    validate_managed_username(username)
+    return run_ntfy_manage(["change-role", username, data.role])
+
+
+@app.put("/ntfy/accounts/{username}/permissions")
+def change_ntfy_permission(
+    username: str,
+    data: NtfyPermissionChange,
+    _admin: bool = Depends(require_admin),
+):
+    validate_managed_username(username)
+    validate_managed_topic(data.topic)
+    return run_ntfy_manage(
+        ["access", username, data.topic, data.permission]
+    )

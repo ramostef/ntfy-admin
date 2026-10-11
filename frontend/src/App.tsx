@@ -35,6 +35,23 @@ const sections = [
   { name: "Paramètres", icon: Settings },
 ];
 
+
+async function fetchNtfyHealth(): Promise<"online" | "offline"> {
+  try {
+    const response = await fetch("/api/ntfy/health", {
+      cache: "no-store",
+    });
+
+    if (!response.ok) return "offline";
+
+    const data: { status: string } = await response.json();
+    return data.status === "online" ? "online" : "offline";
+  } catch {
+    return "offline";
+  }
+}
+
+
 export default function App() {
   const [active, setActive] = useState("Vue d’ensemble");
   const [authenticated, setAuthenticated] = useState(false);
@@ -49,10 +66,33 @@ export default function App() {
   const [ntfyStatus, setNtfyStatus] = useState<
   "checking" | "online" | "offline"
   >("checking");
-  const [accounts, setAccounts] = useState<NtfyAccount[]>([]);
-  const [accountsLoading, setAccountsLoading] = useState(true);
-  const [accountsError, setAccountsError] = useState("");
-  const allAccounts = accounts;
+const [ntfyCheckingManually, setNtfyCheckingManually] = useState(false);
+
+async function handleCheckNtfy() {
+  setNtfyCheckingManually(true);
+  try {
+    setNtfyStatus(await fetchNtfyHealth());
+  } finally {
+    setNtfyCheckingManually(false);
+  }
+}
+
+const [accounts, setAccounts] = useState<NtfyAccount[]>([]);
+const [accountsLoading, setAccountsLoading] = useState(true);
+const [accountsError, setAccountsError] = useState("");
+const [showAddAccount, setShowAddAccount] = useState(false);
+const [newUsername, setNewUsername] = useState("");
+const [newPassword, setNewPassword] = useState("");
+const [newRole, setNewRole] = useState("user");
+const [accountActionMessage, setAccountActionMessage] = useState("");
+const [accountActionError, setAccountActionError] = useState("");
+const [accountActionLoading, setAccountActionLoading] = useState(false);
+const [permissionUser, setPermissionUser] = useState("");
+const [permissionTopic, setPermissionTopic] = useState("tous-les-telephones");
+const [permissionValue, setPermissionValue] = useState("read-only");
+const [passwordUser, setPasswordUser] = useState("");
+const [accountNewPassword, setAccountNewPassword] = useState("");
+const allAccounts = accounts;
 
   useEffect(() => {
     let mounted = true;
@@ -172,27 +212,12 @@ useEffect(() => {
 
   let mounted = true;
 
-  async function checkNtfy() {
-    try {
-      const response = await fetch("/api/ntfy/health", {
-        cache: "no-store",
-      });
 
-      if (!response.ok) {
-        throw new Error("Vérification ntfy impossible");
-      }
+async function checkNtfy() {
+  const status = await fetchNtfyHealth();
+  if (mounted) setNtfyStatus(status);
+}
 
-      const data: { status: string } = await response.json();
-
-      if (mounted) {
-        setNtfyStatus(data.status === "online" ? "online" : "offline");
-      }
-    } catch {
-      if (mounted) {
-        setNtfyStatus("offline");
-      }
-    }
-  }
 
   void checkNtfy();
   const interval = window.setInterval(() => {
@@ -237,6 +262,172 @@ useEffect(() => {
     };
   }, [authenticated]);
 
+  async function handleCreateAccount(event: React.FormEvent<HTMLFormElement>) {
+  event.preventDefault();
+  setAccountActionMessage("");
+  setAccountActionError("");
+
+  if (newRole === "admin") {
+    const confirmed = window.confirm(
+      "Créer un compte administrateur lui donnera des privilèges élevés. Continuer ?"
+    );
+    if (!confirmed) return;
+  }
+
+  setAccountActionLoading(true);
+
+  try {
+    const response = await fetch("/api/ntfy/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: newUsername.trim(),
+        password: newPassword,
+        role: newRole,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Création du compte impossible.");
+    }
+
+    const accountsResponse = await fetch("/api/ntfy/accounts", {
+      cache: "no-store",
+    });
+
+    if (!accountsResponse.ok) {
+      throw new Error(
+        "Compte créé, mais impossible d'actualiser la liste."
+      );
+    }
+
+    const updatedAccounts: NtfyAccount[] = await accountsResponse.json();
+    setAccounts(updatedAccounts);
+    setNewUsername("");
+    setNewPassword("");
+    setNewRole("user");
+    setShowAddAccount(false);
+    setAccountActionMessage(
+      `Le compte ${data.username} a été créé.`
+    );
+  } catch (error) {
+    setAccountActionError(
+      error instanceof Error
+        ? error.message
+        : "Erreur pendant la création."
+    );
+  } finally {
+    setAccountActionLoading(false);
+  }
+}
+async function handlePermissionChange(
+  event: React.FormEvent<HTMLFormElement>
+) {
+  event.preventDefault();
+  setAccountActionMessage("");
+  setAccountActionError("");
+
+  if (!permissionUser) {
+    setAccountActionError("Sélectionne un compte.");
+    return;
+  }
+
+  setAccountActionLoading(true);
+
+  try {
+    const response = await fetch(
+      `/api/ntfy/accounts/${encodeURIComponent(permissionUser)}/permissions`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic: permissionTopic,
+          permission: permissionValue,
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Modification des permissions impossible.");
+    }
+
+    const accountsResponse = await fetch("/api/ntfy/accounts", {
+      cache: "no-store",
+    });
+
+    if (!accountsResponse.ok) {
+      throw new Error("Permission modifiée, mais actualisation impossible.");
+    }
+
+    const updatedAccounts: NtfyAccount[] = await accountsResponse.json();
+    setAccounts(updatedAccounts);
+    setAccountActionMessage(
+      `Permission mise à jour pour ${permissionUser} sur ${permissionTopic}.`
+    );
+  } catch (error) {
+    setAccountActionError(
+      error instanceof Error
+        ? error.message
+        : "Erreur pendant la modification des permissions."
+    );
+  } finally {
+    setAccountActionLoading(false);
+  }
+}
+
+async function handleChangeAccountPassword(
+  event: React.FormEvent<HTMLFormElement>
+) {
+  event.preventDefault();
+  setAccountActionMessage("");
+  setAccountActionError("");
+
+  if (!passwordUser) {
+    setAccountActionError("Sélectionne un compte.");
+    return;
+  }
+
+  if (accountNewPassword.length < 12) {
+    setAccountActionError("Le mot de passe doit contenir au moins 12 caractères.");
+    return;
+  }
+
+  setAccountActionLoading(true);
+
+  try {
+    const response = await fetch(
+      `/api/ntfy/accounts/${encodeURIComponent(passwordUser)}/password`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: accountNewPassword }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Modification du mot de passe impossible.");
+    }
+
+    setAccountNewPassword("");
+    setAccountActionMessage(
+      `Mot de passe modifié pour ${passwordUser}.`
+    );
+  } catch (error) {
+    setAccountActionError(
+      error instanceof Error
+        ? error.message
+        : "Erreur pendant la modification du mot de passe."
+    );
+  } finally {
+    setAccountActionLoading(false);
+  }
+}
 
   if (authChecking) {
     return (
@@ -374,18 +565,72 @@ useEffect(() => {
 />
 
                 <Metric icon={<Smartphone />} label="Téléphones" value="À vérifier" note="Inventaire non connecté" />
-                <Metric icon={<Activity />} label="API admin" value="En ligne" note="Interface de test locale" />
+
+<Metric
+  icon={<Activity />}
+  label="API admin"
+  value={
+    apiStatus === "checking"
+      ? "Vérification…"
+      : apiStatus === "online"
+        ? "En ligne"
+        : "Hors ligne"
+  }
+  note="État actualisé automatiquement"
+/>
+
               </div>
 
               <section className="panel">
                 <div className="panel-heading">
-                  <div><h2>État des services</h2><p>Vue locale du prototype</p></div>
+
+<div className="panel-heading">
+  <div>
+    <h2>État des services</h2>
+    <p>Disponibilité actualisée automatiquement</p>
+  </div>
+  <button
+    type="button"
+    className="health-refresh-button"
+    onClick={handleCheckNtfy}
+    disabled={ntfyCheckingManually}
+  >
+    <Activity size={15} />
+    {ntfyCheckingManually ? "Vérification…" : "Vérifier maintenant"}
+  </button>
+</div>
+
                   <span className="tag">DÉVELOPPEMENT</span>
                 </div>
                 <div className="service-row">
                   <div className="service-icon"><Activity size={19} /></div>
                   <div className="service-info"><strong>API ntfy-admin</strong><span>Backend FastAPI · port 8000</span></div>
-                  <span className="service-state"><span className="status-dot" /> Testé précédemment</span>
+
+<span
+  className={`service-state ${
+    apiStatus === "online"
+      ? "online"
+      : apiStatus === "checking"
+        ? "pending"
+        : "offline"
+  }`}
+>
+  <span
+    className={`status-dot ${
+      apiStatus === "checking"
+        ? "status-checking"
+        : apiStatus === "offline"
+          ? "status-offline"
+          : ""
+    }`}
+  />
+  {apiStatus === "checking"
+    ? "Vérification…"
+    : apiStatus === "online"
+      ? "En ligne"
+      : "Hors ligne"}
+</span>
+
                 </div>
                 <div className="service-row">
                   <div className="service-icon"><Radio size={19} /></div>
@@ -426,7 +671,179 @@ useEffect(() => {
                 </div>
                 <span className="tag">NTFY</span>
               </div>
+		<div className="account-actions">
+  <button
+    type="button"
+    className="add-account-button"
+    onClick={() => {
+      setShowAddAccount(!showAddAccount);
+      setAccountActionMessage("");
+      setAccountActionError("");
+    }}
+  >
+    {showAddAccount ? "Annuler" : "+ Ajouter un compte"}
+  </button>
+</div>
 
+{showAddAccount && (
+  <form className="account-form" onSubmit={handleCreateAccount}>
+    <h3>Créer un compte ntfy</h3>
+
+    <label htmlFor="new-username">Identifiant</label>
+    <input
+      id="new-username"
+      value={newUsername}
+      onChange={(event) => setNewUsername(event.target.value)}
+      pattern="[a-zA-Z0-9_-]{1,32}"
+      maxLength={32}
+      autoComplete="off"
+      required
+    />
+
+    <label htmlFor="new-password">Mot de passe (12 caractères minimum)</label>
+    <input
+      id="new-password"
+      type="password"
+      value={newPassword}
+      onChange={(event) => setNewPassword(event.target.value)}
+      minLength={12}
+      maxLength={1024}
+      autoComplete="new-password"
+      required
+    />
+
+    <label htmlFor="new-role">Rôle</label>
+    <select
+      id="new-role"
+      value={newRole}
+      onChange={(event) => setNewRole(event.target.value)}
+    >
+      <option value="user">Utilisateur</option>
+      <option value="admin">Administrateur</option>
+    </select>
+
+    <button
+      type="submit"
+      className="add-account-button"
+      disabled={accountActionLoading}
+    >
+      {accountActionLoading ? "Création…" : "Créer le compte"}
+    </button>
+  </form>
+)}
+
+{accountActionMessage && (
+  <div className="account-feedback account-feedback-success" role="status">
+    <strong>✓ Opération réussie</strong>
+    <p>{accountActionMessage}</p>
+  </div>
+)}
+
+{accountActionError && (
+  <div className="account-feedback account-feedback-error" role="alert">
+    <strong>⚠ Une erreur est survenue</strong>
+    <p>{accountActionError}</p>
+  </div>
+)}
+
+<form className="account-form" onSubmit={handleChangeAccountPassword}>
+  <h3>Modifier le mot de passe d’un compte</h3>
+
+  <label htmlFor="password-user">Compte</label>
+  <select
+    id="password-user"
+    value={passwordUser}
+    onChange={(event) => setPasswordUser(event.target.value)}
+    required
+  >
+    <option value="">Choisir un compte</option>
+    {accounts
+      .filter((account) => account.username !== "*" && account.username !== "admin")
+      .map((account) => (
+        <option key={account.username} value={account.username}>
+          {account.username}
+        </option>
+      ))}
+  </select>
+
+  <label htmlFor="account-new-password">Nouveau mot de passe (12 caractères minimum)</label>
+  <input
+    id="account-new-password"
+    type="password"
+    value={accountNewPassword}
+    onChange={(event) => setAccountNewPassword(event.target.value)}
+    minLength={12}
+    maxLength={1024}
+    autoComplete="new-password"
+    required
+  />
+
+  <button
+    type="submit"
+    className="add-account-button"
+    disabled={accountActionLoading}
+  >
+    {accountActionLoading ? "Modification…" : "Modifier le mot de passe"}
+  </button>
+</form>
+
+<form className="account-form" onSubmit={handlePermissionChange}>
+  <h3>Modifier les permissions d’un compte</h3>
+
+  <label htmlFor="permission-user">Compte</label>
+  <select
+    id="permission-user"
+    value={permissionUser}
+    onChange={(event) => setPermissionUser(event.target.value)}
+    required
+  >
+    <option value="">Choisir un compte</option>
+    {accounts
+      .filter((account) => account.username !== "*" && account.username !== "admin")
+      .map((account) => (
+        <option key={account.username} value={account.username}>
+          {account.username}
+        </option>
+      ))}
+  </select>
+
+  <label htmlFor="permission-topic">Sujet</label>
+  <select
+    id="permission-topic"
+    value={permissionTopic}
+    onChange={(event) => setPermissionTopic(event.target.value)}
+  >
+    <option value="tous-les-telephones">tous-les-telephones</option>
+    {Array.from({ length: 50 }, (_, index) => {
+      const topic = `tel-${String(index + 1).padStart(3, "0")}`;
+      return (
+        <option key={topic} value={topic}>
+          {topic}
+        </option>
+      );
+    })}
+  </select>
+
+  <label htmlFor="permission-value">Autorisation</label>
+  <select
+    id="permission-value"
+    value={permissionValue}
+    onChange={(event) => setPermissionValue(event.target.value)}
+  >
+    <option value="read-only">Lecture seule</option>
+    <option value="read-write">Lecture et écriture</option>
+    <option value="write-only">Écriture seule</option>
+    <option value="deny">Aucun accès</option>
+  </select>
+
+  <button
+    type="submit"
+    className="add-account-button"
+    disabled={accountActionLoading}
+  >
+    {accountActionLoading ? "Enregistrement…" : "Enregistrer les permissions"}
+  </button>
+</form>
               {accountsError && <p role="alert">{accountsError}</p>}
               {accountsLoading && <p>Chargement des comptes…</p>}
 
