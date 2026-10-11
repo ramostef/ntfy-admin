@@ -71,5 +71,19 @@ def initialize_database():
                     (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             )
         """)
-
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS phones (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone_id TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                ntfy_username TEXT,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'disabled')),
+                notes TEXT,
+                created_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                updated_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            )
+        """)
         connection.commit()

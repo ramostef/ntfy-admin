@@ -24,6 +24,17 @@ type NtfyAccount = {
   permissions: string[];
 };
 
+type Phone = {
+  id: number;
+  phone_id: string;
+  name: string;
+  ntfy_username: string | null;
+  status: "active" | "disabled";
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 const sections = [
   { name: "Vue d’ensemble", icon: LayoutDashboard },
   { name: "Comptes", icon: Users },
@@ -78,6 +89,47 @@ async function handleCheckNtfy() {
 }
 
 const [accounts, setAccounts] = useState<NtfyAccount[]>([]);
+const [phones, setPhones] = useState<Phone[]>([]);
+const [phoneSearch, setPhoneSearch] = useState("");
+const [phoneStatusFilter, setPhoneStatusFilter] = useState<"all" | "active" | "disabled">("all");
+
+const filteredPhones = phones.filter((phone) => {
+  const query = phoneSearch.trim().toLowerCase();
+
+  const matchesSearch =
+    !query ||
+    phone.phone_id.toLowerCase().includes(query) ||
+    phone.name.toLowerCase().includes(query) ||
+    (phone.ntfy_username ?? "").toLowerCase().includes(query) ||
+    (phone.notes ?? "").toLowerCase().includes(query);
+
+  const matchesStatus =
+    phoneStatusFilter === "all" ||
+    phone.status === phoneStatusFilter;
+
+  return matchesSearch && matchesStatus;
+});
+
+const activePhonesCount = phones.filter(
+  (phone) => phone.status === "active"
+).length;
+
+const disabledPhonesCount = phones.filter(
+  (phone) => phone.status === "disabled"
+).length;
+
+const [phonesLoading, setPhonesLoading] = useState(true);
+const [phonesError, setPhonesError] = useState("");
+const [showPhoneForm, setShowPhoneForm] = useState(false);
+const [phoneActionMessage, setPhoneActionMessage] = useState("");
+const [phoneActionError, setPhoneActionError] = useState("");
+const [phoneActionLoading, setPhoneActionLoading] = useState(false);
+const [editingPhoneId, setEditingPhoneId] = useState("");
+const [phoneIdInput, setPhoneIdInput] = useState("");
+const [phoneNameInput, setPhoneNameInput] = useState("");
+const [phoneUsernameInput, setPhoneUsernameInput] = useState("");
+const [phoneStatusInput, setPhoneStatusInput] = useState<"active" | "disabled">("active");
+const [phoneNotesInput, setPhoneNotesInput] = useState("");
 const [accountsLoading, setAccountsLoading] = useState(true);
 const [accountsError, setAccountsError] = useState("");
 const [showAddAccount, setShowAddAccount] = useState(false);
@@ -262,6 +314,52 @@ async function checkNtfy() {
     };
   }, [authenticated]);
 
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadPhones() {
+      try {
+        const response = await fetch("/api/phones", {
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          throw new Error("Impossible de charger l’inventaire.");
+        }
+
+        const data: Phone[] = await response.json();
+
+        if (mounted) {
+          setPhones(data);
+          setPhonesError("");
+        }
+      } catch {
+        if (mounted) {
+          setPhonesError(
+            "Chargement impossible. Vérifie que l’API est en ligne."
+          );
+        }
+      } finally {
+        if (mounted) {
+          setPhonesLoading(false);
+        }
+      }
+    }
+
+    if (authenticated) {
+      void loadPhones();
+    } else {
+      setPhones([]);
+      setPhonesLoading(false);
+    }
+
+    return () => {
+      mounted = false;
+    };
+  }, [authenticated]);
+
+
   async function handleCreateAccount(event: React.FormEvent<HTMLFormElement>) {
   event.preventDefault();
   setAccountActionMessage("");
@@ -322,6 +420,141 @@ async function checkNtfy() {
     setAccountActionLoading(false);
   }
 }
+
+
+async function handleSavePhone(event: React.FormEvent<HTMLFormElement>) {
+  event.preventDefault();
+  setPhoneActionMessage("");
+  setPhoneActionError("");
+
+  const phoneId = editingPhoneId || phoneIdInput.trim();
+  const name = phoneNameInput.trim();
+
+  if (!name) {
+    setPhoneActionError("Le nom du téléphone est obligatoire.");
+    return;
+  }
+
+  setPhoneActionLoading(true);
+
+  try {
+    const response = await fetch(
+      editingPhoneId
+        ? `/api/phones/${encodeURIComponent(editingPhoneId)}`
+        : "/api/phones",
+      {
+        method: editingPhoneId ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone_id: phoneId,
+          name,
+          ntfy_username: phoneUsernameInput.trim() || null,
+          status: phoneStatusInput,
+          notes: phoneNotesInput.trim() || null,
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Enregistrement impossible.");
+    }
+
+    const listResponse = await fetch("/api/phones", {
+      cache: "no-store",
+    });
+
+    if (!listResponse.ok) {
+      throw new Error("Fiche enregistrée, mais actualisation impossible.");
+    }
+
+    const updatedPhones: Phone[] = await listResponse.json();
+    setPhones(updatedPhones);
+    setShowPhoneForm(false);
+    setEditingPhoneId("");
+    setPhoneIdInput("");
+    setPhoneNameInput("");
+    setPhoneUsernameInput("");
+    setPhoneStatusInput("active");
+    setPhoneNotesInput("");
+    setPhoneActionMessage(
+      editingPhoneId
+        ? "Téléphone modifié."
+        : "Téléphone ajouté à l’inventaire."
+    );
+    setPhonesError("");
+  } catch (error) {
+    setPhoneActionError(
+      error instanceof Error
+        ? error.message
+        : "Erreur pendant l’enregistrement."
+    );
+  } finally {
+    setPhoneActionLoading(false);
+  }
+}
+
+
+function handleEditPhone(phone: Phone) {
+  setEditingPhoneId(phone.phone_id);
+  setPhoneIdInput(phone.phone_id);
+  setPhoneNameInput(phone.name);
+  setPhoneUsernameInput(phone.ntfy_username ?? "");
+  setPhoneStatusInput(phone.status);
+  setPhoneNotesInput(phone.notes ?? "");
+  setPhoneActionMessage("");
+  setPhoneActionError("");
+  setShowPhoneForm(true);
+}
+
+async function handleDeletePhone(phone: Phone) {
+  const confirmed = window.confirm(
+    `Retirer « ${phone.name} » (${phone.phone_id}) de l’inventaire ?\n\nLe compte ntfy associé ne sera pas supprimé.`
+  );
+
+  if (!confirmed) {
+    return;
+  }
+
+  setPhoneActionMessage("");
+  setPhoneActionError("");
+  setPhoneActionLoading(true);
+
+  try {
+    const response = await fetch(
+      `/api/phones/${encodeURIComponent(phone.phone_id)}`,
+      { method: "DELETE" }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Suppression impossible.");
+    }
+
+    const listResponse = await fetch("/api/phones", {
+      cache: "no-store",
+    });
+
+    if (!listResponse.ok) {
+      throw new Error("Suppression effectuée, mais actualisation impossible.");
+    }
+
+    const updatedPhones: Phone[] = await listResponse.json();
+    setPhones(updatedPhones);
+    setPhoneActionMessage("Téléphone retiré de l’inventaire.");
+  } catch (error) {
+    setPhoneActionError(
+      error instanceof Error
+        ? error.message
+        : "Erreur pendant la suppression."
+    );
+  } finally {
+    setPhoneActionLoading(false);
+  }
+}
+
 async function handlePermissionChange(
   event: React.FormEvent<HTMLFormElement>
 ) {
@@ -564,7 +797,12 @@ async function handleChangeAccountPassword(
   note="Comptes récupérés depuis ntfy"
 />
 
-                <Metric icon={<Smartphone />} label="Téléphones" value="À vérifier" note="Inventaire non connecté" />
+               <Metric
+  icon={<Smartphone />}
+  label="Téléphones"
+  value="Non recensés"
+  note="Inventaire des appareils à créer"
+/>
 
 <Metric
   icon={<Activity />}
@@ -583,8 +821,6 @@ async function handleChangeAccountPassword(
 
               <section className="panel">
                 <div className="panel-heading">
-
-<div className="panel-heading">
   <div>
     <h2>État des services</h2>
     <p>Disponibilité actualisée automatiquement</p>
@@ -598,7 +834,6 @@ async function handleChangeAccountPassword(
     <Activity size={15} />
     {ntfyCheckingManually ? "Vérification…" : "Vérifier maintenant"}
   </button>
-</div>
 
                   <span className="tag">DÉVELOPPEMENT</span>
                 </div>
@@ -929,7 +1164,224 @@ async function handleChangeAccountPassword(
   ))}
 
       </section>
+
+          ) : active === "Téléphones" ? (
+            <section className="panel">
+              <div className="section-heading">
+                <div>
+                  <h2>Inventaire des téléphones</h2>
+
+                  <p>Gérer les appareils enregistrés, indépendamment des comptes ntfy.</p>
+                </div>
+
+                <div className="phone-stats">
+                  <div className="phone-stat">
+                    <span>Total enregistré</span>
+                    <strong>{phones.length}</strong>
+                  </div>
+                  <div className="phone-stat">
+                    <span>Téléphones actifs</span>
+                    <strong>{activePhonesCount}</strong>
+                  </div>
+                  <div className="phone-stat">
+                    <span>Téléphones désactivés</span>
+                    <strong>{disabledPhonesCount}</strong>
+                  </div>
+                </div>
+
+                <button
+
+                  type="button"
+                  onClick={() => {
+                    setEditingPhoneId("");
+                    setPhoneIdInput("");
+                    setPhoneNameInput("");
+                    setPhoneUsernameInput("");
+                    setPhoneStatusInput("active");
+                    setPhoneNotesInput("");
+                    setPhoneActionMessage("");
+                    setPhoneActionError("");
+                    setShowPhoneForm(true);
+                  }}
+                >
+                  Ajouter un téléphone
+                </button>
+              </div>
+
+              {phoneActionMessage && (
+                <p role="status">{phoneActionMessage}</p>
+              )}
+              {phoneActionError && (
+                <p role="alert">{phoneActionError}</p>
+              )}
+              {phonesError && <p role="alert">{phonesError}</p>}
+
+              {showPhoneForm && (
+                <form onSubmit={handleSavePhone} className="phone-form">
+                  <h3>
+                    {editingPhoneId ? "Modifier le téléphone" : "Nouveau téléphone"}
+                  </h3>
+
+                  <label>
+                    Identifiant du téléphone
+                    <input
+                      type="text"
+                      value={phoneIdInput}
+                      onChange={(event) => setPhoneIdInput(event.target.value)}
+                      placeholder="tel-001"
+                      pattern="tel-[0-9]{3}"
+                      required
+                      disabled={Boolean(editingPhoneId)}
+                    />
+                  </label>
+
+                  <label>
+                    Nom du téléphone
+                    <input
+                      type="text"
+                      value={phoneNameInput}
+                      onChange={(event) => setPhoneNameInput(event.target.value)}
+                      maxLength={100}
+                      required
+                    />
+                  </label>
+
+                  <label>
+                    Nom du compte ntfy associé (facultatif)
+                    <input
+                      type="text"
+                      value={phoneUsernameInput}
+                      onChange={(event) => setPhoneUsernameInput(event.target.value)}
+                      maxLength={32}
+                      placeholder="tel001"
+                    />
+                  </label>
+
+                  <label>
+                    Statut
+                    <select
+                      value={phoneStatusInput}
+                      onChange={(event) =>
+                        setPhoneStatusInput(event.target.value as "active" | "disabled")
+                      }
+                    >
+                      <option value="active">Actif</option>
+                      <option value="disabled">Désactivé</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    Notes (facultatif)
+                    <textarea
+                      value={phoneNotesInput}
+                      onChange={(event) => setPhoneNotesInput(event.target.value)}
+                      maxLength={1000}
+                      rows={3}
+                    />
+                  </label>
+
+                  <button type="submit" disabled={phoneActionLoading}>
+                    {phoneActionLoading ? "Enregistrement…" : "Enregistrer"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={phoneActionLoading}
+                    onClick={() => {
+                      setShowPhoneForm(false);
+                      setEditingPhoneId("");
+                      setPhoneActionError("");
+                    }}
+                  >
+                    Annuler
+                  </button>
+                </form>
+              )}
+
+                            {phonesLoading ? (
+                <p>Chargement de l’inventaire…</p>
+              ) : (
+                <>
+                  <div className="phone-filters">
+                    <label>
+                      Rechercher un téléphone
+                      <input
+                        type="search"
+                        value={phoneSearch}
+                        onChange={(event) => setPhoneSearch(event.target.value)}
+                        placeholder="Identifiant, nom, compte ntfy ou notes"
+                      />
+                    </label>
+
+                    <label>
+                      Filtrer par statut
+                      <select
+                        value={phoneStatusFilter}
+                        onChange={(event) =>
+                          setPhoneStatusFilter(
+                            event.target.value as "all" | "active" | "disabled"
+                          )
+                        }
+                      >
+                        <option value="all">Tous les statuts</option>
+                        <option value="active">Actifs</option>
+                        <option value="disabled">Désactivés</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  {phones.length === 0 ? (
+                    <p>Aucun téléphone enregistré pour le moment.</p>
+                  ) : (
+
+               <div className="table-container">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Identifiant</th>
+                        <th>Nom</th>
+                        <th>Compte ntfy</th>
+                        <th>Statut</th>
+                        <th>Notes</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredPhones.map((phone) => (
+                        <tr key={phone.phone_id}>
+                          <td>{phone.phone_id}</td>
+                          <td>{phone.name}</td>
+                          <td>{phone.ntfy_username || "—"}</td>
+                          <td>
+                            {phone.status === "active" ? "Actif" : "Désactivé"}
+                          </td>
+                          <td>{phone.notes || "—"}</td>
+                          <td>
+                            <button
+                              type="button"
+                              disabled={phoneActionLoading}
+                              onClick={() => handleEditPhone(phone)}
+                            >
+                              Modifier
+                            </button>
+                            <button
+                              type="button"
+                              disabled={phoneActionLoading}
+                              onClick={() => void handleDeletePhone(phone)}
+                            >
+                              Retirer
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+		</>
+              )}
+            </section>
           ) : (
+
             <section className="panel placeholder">
 
               <div className="placeholder-icon"><Menu size={24} /></div>

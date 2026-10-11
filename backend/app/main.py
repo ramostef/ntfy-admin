@@ -1,4 +1,3 @@
-
 import os
 import subprocess
 import re
@@ -383,3 +382,176 @@ def change_ntfy_permission(
     return run_ntfy_manage(
         ["access", username, data.topic, data.permission]
     )
+
+
+# --- Inventaire des téléphones ---
+
+class PhoneCreate(BaseModel):
+    phone_id: str = Field(
+        min_length=7,
+        max_length=7,
+        pattern=r"^tel-[0-9]{3}$",
+    )
+    name: str = Field(min_length=1, max_length=100)
+    ntfy_username: str | None = Field(default=None, max_length=32)
+    status: str = Field(default="active", pattern=r"^(active|disabled)$")
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+class PhoneUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    ntfy_username: str | None = Field(default=None, max_length=32)
+    status: str = Field(pattern=r"^(active|disabled)$")
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+@app.get("/phones")
+def list_phones(_admin: bool = Depends(require_admin)):
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, phone_id, name, ntfy_username,
+                   status, notes, created_at, updated_at
+            FROM phones
+            ORDER BY phone_id
+            """
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+@app.post("/phones", status_code=201)
+def create_phone(
+    data: PhoneCreate,
+    _admin: bool = Depends(require_admin),
+):
+    phone_id = data.phone_id.strip()
+    name = data.name.strip()
+
+    if not name:
+        raise HTTPException(
+            status_code=422,
+            detail="Le nom du téléphone est obligatoire",
+        )
+
+    ntfy_username = (
+        data.ntfy_username.strip()
+        if data.ntfy_username and data.ntfy_username.strip()
+        else None
+    )
+    notes = data.notes.strip() if data.notes and data.notes.strip() else None
+
+    try:
+        with get_connection() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO phones (
+                    phone_id, name, ntfy_username, status, notes
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (phone_id, name, ntfy_username, data.status, notes),
+            )
+            row = connection.execute(
+                """
+                SELECT id, phone_id, name, ntfy_username,
+                       status, notes, created_at, updated_at
+                FROM phones
+                WHERE id = ?
+                """,
+                (cursor.lastrowid,),
+            ).fetchone()
+    except Exception as exc:
+        if "UNIQUE constraint failed" in str(exc):
+            raise HTTPException(
+                status_code=409,
+                detail="Cet identifiant de téléphone existe déjà",
+            )
+        raise
+
+    return dict(row)
+
+
+@app.put("/phones/{phone_id}")
+def update_phone(
+    phone_id: str,
+    data: PhoneUpdate,
+    _admin: bool = Depends(require_admin),
+):
+    if not re.fullmatch(r"tel-[0-9]{3}", phone_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Identifiant de téléphone invalide",
+        )
+
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(
+            status_code=422,
+            detail="Le nom du téléphone est obligatoire",
+        )
+
+    ntfy_username = (
+        data.ntfy_username.strip()
+        if data.ntfy_username and data.ntfy_username.strip()
+        else None
+    )
+    notes = data.notes.strip() if data.notes and data.notes.strip() else None
+
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE phones
+            SET name = ?,
+                ntfy_username = ?,
+                status = ?,
+                notes = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE phone_id = ?
+            """,
+            (name, ntfy_username, data.status, notes, phone_id),
+        )
+
+        if cursor.rowcount == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="Téléphone introuvable",
+            )
+
+        row = connection.execute(
+            """
+            SELECT id, phone_id, name, ntfy_username,
+                   status, notes, created_at, updated_at
+            FROM phones
+            WHERE phone_id = ?
+            """,
+            (phone_id,),
+        ).fetchone()
+
+    return dict(row)
+
+
+@app.delete("/phones/{phone_id}")
+def delete_phone(
+    phone_id: str,
+    _admin: bool = Depends(require_admin),
+):
+    if not re.fullmatch(r"tel-[0-9]{3}", phone_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Identifiant de téléphone invalide",
+        )
+
+    with get_connection() as connection:
+        cursor = connection.execute(
+            "DELETE FROM phones WHERE phone_id = ?",
+            (phone_id,),
+        )
+
+        if cursor.rowcount == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="Téléphone introuvable",
+            )
+
+    return {"ok": True, "message": "Téléphone retiré de l’inventaire"}
