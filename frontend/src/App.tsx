@@ -1022,7 +1022,127 @@ async function handleChangeAccountPassword(
   </button>
 </form>
 
-<form className="account-form" onSubmit={handlePermissionChange}>
+
+              {accountsError && <p role="alert">{accountsError}</p>}
+              {accountsLoading && <p>Chargement des comptes…</p>}
+
+              <input
+                className="account-search"
+                type="search"
+                placeholder="Rechercher un compte..."
+                value={accountSearch}
+                onChange={(event) => setAccountSearch(event.target.value)}
+              />
+
+
+{allAccounts
+  .filter((account) =>
+    `${account.username} ${account.role} ${account.permissions.join(" ")}`
+      .toLowerCase()
+      .includes(accountSearch.toLowerCase())
+  )
+  .map((account) => (
+    <div className="account-card" key={account.username}>
+      <div className="account-card-header">
+        <div className="service-icon">
+          {account.role === "admin" ? (
+            <ShieldCheck size={20} />
+          ) : (
+            <Smartphone size={20} />
+          )}
+        </div>
+
+        <div className="service-info">
+          <strong>{account.username}</strong>
+          <span>
+            {account.role === "admin"
+              ? "Administrateur"
+              : account.role === "anonymous"
+                ? "Accès anonyme"
+                : "Compte utilisateur"}
+          </span>
+        </div>
+
+        <span
+          className={`account-role ${
+            account.role === "admin" ? "account-role-admin" : ""
+          }`}
+        >
+          {account.role}
+        </span>
+      </div>
+
+      <div className="account-permissions">
+        <strong>Permissions</strong>
+
+        {account.permissions.map((permission, index) => {
+          const isReadWrite = permission.includes("read-write");
+          const isReadOnly = permission.includes("read-only");
+          const isWriteOnly = permission.includes("write-only");
+          const isDenied = permission.includes("deny");
+
+          const permissionLabel = isReadWrite
+            ? "Lecture et écriture"
+            : isReadOnly
+              ? "Lecture seule"
+              : isWriteOnly
+                ? "Écriture seule"
+                : isDenied
+                  ? "Aucun accès"
+                  : "Permission";
+
+          const permissionClass =
+            isReadWrite || isWriteOnly
+              ? "permission-write"
+              : isReadOnly
+                ? "permission-read"
+                : "permission-neutral";
+
+          return (
+            <div className="permission-row" key={`${account.username}-${index}`}>
+              <span className={`permission-badge ${permissionClass}`}>
+                {permissionLabel}
+              </span>
+
+              <span className="permission-description">
+                {permission}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  ))}
+
+      </section>
+
+          ) : active === "Autorisations" ? (
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Gestion des autorisations</h2>
+                  <p>Choisis un compte, un sujet et les droits à appliquer.</p>
+                </div>
+                <span className="tag">NTFY</span>
+              </div>
+
+              {accountActionMessage && (
+                <div className="account-feedback account-feedback-success" role="status">
+                  <strong>✓ Opération réussie</strong>
+                  <p>{accountActionMessage}</p>
+                </div>
+              )}
+
+              {accountActionError && (
+                <div className="account-feedback account-feedback-error" role="alert">
+                  <strong>⚠ Une erreur est survenue</strong>
+                  <p>{accountActionError}</p>
+                </div>
+              )}
+              {accountsError && <p role="alert">{accountsError}</p>}
+              {accountsLoading && <p>Chargement des comptes…</p>}
+
+              <form className="account-form" onSubmit={handlePermissionChange}>
   <h3>Modifier les permissions d’un compte</h3>
 
   <label htmlFor="permission-user">Compte</label>
@@ -1079,94 +1199,9 @@ async function handleChangeAccountPassword(
     {accountActionLoading ? "Enregistrement…" : "Enregistrer les permissions"}
   </button>
 </form>
-              {accountsError && <p role="alert">{accountsError}</p>}
-              {accountsLoading && <p>Chargement des comptes…</p>}
-
-              <input
-                className="account-search"
-                type="search"
-                placeholder="Rechercher un compte..."
-                value={accountSearch}
-                onChange={(event) => setAccountSearch(event.target.value)}
-              />
-
-
-{allAccounts
-  .filter((account) =>
-    `${account.username} ${account.role} ${account.permissions.join(" ")}`
-      .toLowerCase()
-      .includes(accountSearch.toLowerCase())
-  )
-  .map((account) => (
-    <div className="account-card" key={account.username}>
-      <div className="account-card-header">
-        <div className="service-icon">
-          {account.role === "admin" ? (
-            <ShieldCheck size={20} />
-          ) : (
-            <Smartphone size={20} />
-          )}
-        </div>
-
-        <div className="service-info">
-          <strong>{account.username}</strong>
-          <span>
-            {account.role === "admin"
-              ? "Administrateur"
-              : account.role === "anonymous"
-                ? "Accès anonyme"
-                : "Compte utilisateur"}
-          </span>
-        </div>
-
-        <span
-          className={`account-role ${
-            account.role === "admin" ? "account-role-admin" : ""
-          }`}
-        >
-          {account.role}
-        </span>
-      </div>
-
-      <div className="account-permissions">
-        <strong>Permissions</strong>
-
-        {account.permissions.map((permission, index) => {
-          const isWrite = permission.includes("read-write");
-          const isRead = permission.includes("read-only");
-
-          return (
-            <div className="permission-row" key={`${account.username}-${index}`}>
-              <span
-                className={`permission-badge ${
-                  isWrite
-                    ? "permission-write"
-                    : isRead
-                      ? "permission-read"
-                      : "permission-neutral"
-                }`}
-              >
-                {isWrite
-                  ? "Lecture-écriture"
-                  : isRead
-                    ? "Lecture seule"
-                    : "Information"}
-              </span>
-
-              <span className="permission-description">
-                {permission}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  ))}
-
-      </section>
-
+            </section>
           ) : active === "Téléphones" ? (
-            <section className="panel">
+            <section className="panel phone-inventory-panel">
               <div className="section-heading">
                 <div>
                   <h2>Inventaire des téléphones</h2>
