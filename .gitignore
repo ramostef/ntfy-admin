@@ -24,3 +24,22 @@ backups/
 .vscode/
 .idea/
 .DS_Store
+
+# Sauvegardes locales et fichiers de secours
+*.bak
+*.before-*
+*.avant-*
+backup-interimaires-*/
+backend/data/
+frontend/tsc
+frontend/frontend@0.0.0
+
+# Sauvegardes locales et fichiers de secours
+*.bak
+*.before-*
+*.avant-*
+backup-interimaires-*/
+backend/data/
+frontend/tsc
+frontend/frontend@0.0.0
+frontend/src/*.bak-health
