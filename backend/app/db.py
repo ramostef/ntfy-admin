@@ -86,4 +86,51 @@ def initialize_database():
                     (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             )
         """)
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS interim_workers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name TEXT NOT NULL,
+                ntfy_username TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'closed')),
+                decision TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (decision IN (
+                        'pending', 'extended',
+                        'access_reviewed', 'keep_access'
+                    )),
+                decision_note TEXT,
+                created_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                updated_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                CHECK (end_date >= start_date)
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_interim_workers_end_date
+            ON interim_workers(end_date)
+        """)
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS interim_worker_phones (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                worker_id INTEGER NOT NULL,
+                phone_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE (worker_id, phone_id),
+                FOREIGN KEY (worker_id)
+                    REFERENCES interim_workers(id) ON DELETE CASCADE
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_interim_worker_phones_worker
+            ON interim_worker_phones(worker_id)
+        """)
+
         connection.commit()

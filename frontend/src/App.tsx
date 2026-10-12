@@ -3,6 +3,7 @@ import {
   Activity,
   Bell,
   BookOpen,
+  BriefcaseBusiness,
   CheckCircle2,
   LayoutDashboard,
   LockKeyhole,
@@ -35,10 +36,35 @@ type Phone = {
   updated_at: string;
 };
 
+type InterimWorker = {
+  id: number;
+  full_name: string;
+  ntfy_username: string;
+  start_date: string;
+  end_date: string;
+  status: "active" | "closed";
+  decision: "pending" | "extended" | "access_reviewed" | "keep_access";
+  decision_note: string | null;
+  alert: "overdue" | "due_today" | "upcoming" | "closed";
+  phones: { phone_id: string; name: string; status: string }[];
+};
+
+
+type AuditEvent = {
+  id: number;
+  actor_username: string;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  details_json: string | null;
+  created_at: string;
+};
+
 const sections = [
   { name: "Vue d’ensemble", icon: LayoutDashboard },
   { name: "Comptes", icon: Users },
   { name: "Téléphones", icon: Smartphone },
+  { name: "Intérimaires", icon: BriefcaseBusiness },
   { name: "Autorisations", icon: ShieldCheck },
   { name: "Notifications", icon: Bell },
   { name: "Historique", icon: BookOpen },
@@ -65,6 +91,72 @@ async function fetchNtfyHealth(): Promise<"online" | "offline"> {
 
 export default function App() {
   const [active, setActive] = useState("Vue d’ensemble");
+
+  const [notificationRecipients, setNotificationRecipients] = useState<string[]>([]);
+  const [notificationTitle, setNotificationTitle] = useState("");
+  const [notificationBody, setNotificationBody] = useState("");
+  const [notificationPreview, setNotificationPreview] = useState(false);
+  const [notificationSending, setNotificationSending] = useState(false);
+  const [notificationResult, setNotificationResult] = useState("");
+
+  async function handleSendNotification() {
+    if (notificationSending) return;
+
+    const selectedPhones = phones.filter((phone) =>
+      notificationRecipients.includes(phone.phone_id) && phone.status === "active"
+    );
+    if (selectedPhones.length === 0 || !notificationTitle.trim() || !notificationBody.trim()) {
+      setNotificationResult("Vérifiez le titre, le message et les destinataires actifs.");
+      return;
+    }
+
+    const names = selectedPhones.map((phone) => `${phone.name} (${phone.phone_id})`).join("\\n");
+    const confirmed = window.confirm(
+      `Confirmer l'envoi de cette notification ?\\n\\nDestinataires :\\n${names}\\n\\nTitre : ${notificationTitle.trim()}\\n\\nMessage :\\n${notificationBody.trim()}`
+    );
+    if (!confirmed) return;
+
+    setNotificationSending(true);
+    setNotificationResult("");
+
+    try {
+      const response = await fetch("/api/notifications/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipients: selectedPhones.map((phone) => phone.phone_id),
+          title: notificationTitle.trim(),
+          body: notificationBody.trim(),
+        }),
+      });
+
+      const result: {
+        message?: string;
+        accepted_count?: number;
+        failed_count?: number;
+        detail?: string | { message?: string };
+      } = await response.json();
+
+      if (!response.ok) {
+        const detail = typeof result.detail === "string"
+          ? result.detail
+          : result.detail?.message;
+        throw new Error(detail || "L'envoi a échoué.");
+      }
+
+      setNotificationResult(
+        `${result.message || "Envoi traité."} Destinataires acceptés : ${result.accepted_count ?? 0}. Échecs : ${result.failed_count ?? 0}.`
+      );
+      setNotificationPreview(false);
+    } catch (error) {
+      setNotificationResult(
+        error instanceof Error ? error.message : "Erreur lors de l'envoi."
+      );
+    } finally {
+      setNotificationSending(false);
+    }
+  }
+
   const [authenticated, setAuthenticated] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
   const [loginPassword, setLoginPassword] = useState("");
@@ -81,8 +173,18 @@ const [ntfyCheckingManually, setNtfyCheckingManually] = useState(false);
 
 async function handleCheckNtfy() {
   setNtfyCheckingManually(true);
+
+  const startedAt = Date.now();
+
   try {
-    setNtfyStatus(await fetchNtfyHealth());
+    const status = await fetchNtfyHealth();
+    const elapsed = Date.now() - startedAt;
+
+    if (elapsed < 800) {
+      await new Promise(resolve => setTimeout(resolve, 800 - elapsed));
+    }
+
+    setNtfyStatus(status);
   } finally {
     setNtfyCheckingManually(false);
   }
@@ -90,6 +192,21 @@ async function handleCheckNtfy() {
 
 const [accounts, setAccounts] = useState<NtfyAccount[]>([]);
 const [phones, setPhones] = useState<Phone[]>([]);
+const [interimWorkers, setInterimWorkers] = useState<InterimWorker[]>([]);
+const [interimLoading, setInterimLoading] = useState(true);
+const [interimError, setInterimError] = useState("");
+const [interimMessage, setInterimMessage] = useState("");
+const [interimActionLoading, setInterimActionLoading] = useState(false);
+const [interimDecisionNotes, setInterimDecisionNotes] = useState<Record<number, string>>({});
+const [interimDecisionChoices, setInterimDecisionChoices] = useState<Record<number, InterimWorker["decision"]>>({});
+const [showInterimForm, setShowInterimForm] = useState(false);
+const [editingInterimWorkerId, setEditingInterimWorkerId] = useState<number | null>(null);
+const [interimFullName, setInterimFullName] = useState("");
+const [interimUsername, setInterimUsername] = useState("");
+const [interimStartDate, setInterimStartDate] = useState("");
+const [interimEndDate, setInterimEndDate] = useState("");
+const [interimPhoneIds, setInterimPhoneIds] = useState<string[]>([]);
+
 const [phoneSearch, setPhoneSearch] = useState("");
 const [phoneStatusFilter, setPhoneStatusFilter] = useState<"all" | "active" | "disabled">("all");
 
@@ -146,6 +263,11 @@ const [passwordUser, setPasswordUser] = useState("");
 const [accountNewPassword, setAccountNewPassword] = useState("");
 const allAccounts = accounts;
 
+const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+const [auditLoading, setAuditLoading] = useState(false);
+const [auditError, setAuditError] = useState("");
+
+
   useEffect(() => {
     let mounted = true;
 
@@ -175,6 +297,50 @@ const allAccounts = accounts;
       mounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!authenticated || active !== "Historique") return;
+
+    let mounted = true;
+
+    async function loadAuditEvents() {
+      setAuditLoading(true);
+      setAuditError("");
+
+      try {
+        const response = await fetch("/api/audit-events", {
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          throw new Error(
+            response.status === 401
+              ? "Session expirée. Reconnectez-vous."
+              : "Impossible de charger l’historique."
+          );
+        }
+
+        const data: AuditEvent[] = await response.json();
+        if (mounted) setAuditEvents(data);
+      } catch (error) {
+        if (mounted) {
+          setAuditError(
+            error instanceof Error
+              ? error.message
+              : "Erreur de chargement."
+          );
+        }
+      } finally {
+        if (mounted) setAuditLoading(false);
+      }
+    }
+
+    void loadAuditEvents();
+
+    return () => {
+      mounted = false;
+    };
+  }, [authenticated, active]);
 
   async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -360,6 +526,56 @@ async function checkNtfy() {
   }, [authenticated]);
 
 
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadInterimWorkers() {
+      try {
+        const response = await fetch("/api/interim-workers", {
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(
+            data.detail || "Impossible de charger les intérimaires."
+          );
+        }
+
+        const data: InterimWorker[] = await response.json();
+
+        if (mounted) {
+          setInterimWorkers(data);
+          setInterimError("");
+        }
+      } catch (error) {
+        if (mounted) {
+          setInterimError(
+            error instanceof Error
+              ? error.message
+              : "Chargement des intérimaires impossible."
+          );
+        }
+      } finally {
+        if (mounted) {
+          setInterimLoading(false);
+        }
+      }
+    }
+
+    if (authenticated) {
+      setInterimLoading(true);
+      void loadInterimWorkers();
+    } else {
+      setInterimWorkers([]);
+      setInterimLoading(false);
+    }
+
+    return () => {
+      mounted = false;
+    };
+  }, [authenticated]);
+
   async function handleCreateAccount(event: React.FormEvent<HTMLFormElement>) {
   event.preventDefault();
   setAccountActionMessage("");
@@ -421,6 +637,179 @@ async function checkNtfy() {
   }
 }
 
+
+function handleEditInterimWorker(worker: InterimWorker) {
+  setEditingInterimWorkerId(worker.id);
+  setInterimFullName(worker.full_name);
+  setInterimUsername(worker.ntfy_username);
+  setInterimStartDate(worker.start_date);
+  setInterimEndDate(worker.end_date);
+  setInterimPhoneIds(worker.phones.map((phone) => phone.phone_id));
+  setInterimError("");
+  setInterimMessage("");
+  setShowInterimForm(true);
+}
+
+async function handleUpdateInterimWorker(event: React.FormEvent<HTMLFormElement>) {
+  event.preventDefault();
+  setInterimError("");
+  setInterimMessage("");
+
+  if (!editingInterimWorkerId) {
+    setInterimError("Aucune fiche sélectionnée pour modification.");
+    return;
+  }
+  if (!interimFullName.trim() || !interimStartDate || !interimEndDate) {
+    setInterimError("Merci de remplir tous les champs obligatoires.");
+    return;
+  }
+  if (interimEndDate < interimStartDate) {
+    setInterimError("La date de fin doit être égale ou postérieure à la date de début.");
+    return;
+  }
+
+  setInterimActionLoading(true);
+  try {
+    const response = await fetch(`/api/interim-workers/${editingInterimWorkerId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        full_name: interimFullName.trim(),
+        start_date: interimStartDate,
+        end_date: interimEndDate,
+        phone_ids: interimPhoneIds,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Modification de la fiche impossible.");
+    }
+
+    const listResponse = await fetch("/api/interim-workers", { cache: "no-store" });
+    if (!listResponse.ok) {
+      throw new Error("Modification enregistrée, mais actualisation de la liste impossible.");
+    }
+
+    setInterimWorkers(await listResponse.json());
+    setShowInterimForm(false);
+    setEditingInterimWorkerId(null);
+    setInterimMessage("Fiche modifiée. Le compte ntfy et ses permissions n'ont pas été modifiés.");
+  } catch (error) {
+    setInterimError(error instanceof Error ? error.message : "Erreur pendant la modification.");
+  } finally {
+    setInterimActionLoading(false);
+  }
+}
+
+async function handleSaveInterimWorker(event: React.FormEvent<HTMLFormElement>) {
+  event.preventDefault();
+  setInterimError("");
+  setInterimMessage("");
+
+  if (!interimFullName.trim() || !interimUsername.trim() ||
+      !interimStartDate || !interimEndDate) {
+    setInterimError("Merci de remplir tous les champs obligatoires.");
+    return;
+  }
+
+  if (interimEndDate < interimStartDate) {
+    setInterimError("La date de fin doit être égale ou postérieure à la date de début.");
+    return;
+  }
+
+  setInterimActionLoading(true);
+  try {
+    const response = await fetch("/api/interim-workers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        full_name: interimFullName.trim(),
+        ntfy_username: interimUsername.trim(),
+        start_date: interimStartDate,
+        end_date: interimEndDate,
+        phone_ids: interimPhoneIds,
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Création de la fiche impossible.");
+    }
+
+    const listResponse = await fetch("/api/interim-workers", {
+      cache: "no-store",
+    });
+    if (!listResponse.ok) {
+      throw new Error("Fiche créée, mais actualisation de la liste impossible.");
+    }
+
+    const updatedWorkers: InterimWorker[] = await listResponse.json();
+    setInterimWorkers(updatedWorkers);
+    setShowInterimForm(false);
+    setInterimFullName("");
+    setInterimUsername("");
+    setInterimStartDate("");
+    setInterimEndDate("");
+    setInterimPhoneIds([]);
+    setInterimMessage("Fiche intérimaire créée.");
+  } catch (error) {
+    setInterimError(
+      error instanceof Error ? error.message : "Erreur pendant la création."
+    );
+  } finally {
+    setInterimActionLoading(false);
+  }
+}
+
+
+
+async function handleInterimAction(
+  worker: InterimWorker,
+  action: "decision" | "close",
+  decision?: "pending" | "extended" | "access_reviewed" | "keep_access",
+) {
+  setInterimError("");
+  setInterimMessage("");
+
+  if (action === "close") {
+    const confirmed = window.confirm(
+      `Clôturer la fiche de ${worker.full_name} ? Cette action ne supprimera pas le compte ntfy et ne modifiera aucune permission.`
+    );
+    if (!confirmed) return;
+  }
+
+  setInterimActionLoading(true);
+  try {
+    const note = (interimDecisionNotes[worker.id] ?? "").trim();
+    const response = await fetch(`/api/interim-workers/${worker.id}/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(action === "close" ? { note } : { decision, note }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Action impossible.");
+    }
+
+    const listResponse = await fetch("/api/interim-workers", { cache: "no-store" });
+    if (!listResponse.ok) {
+      throw new Error("Action enregistrée, mais actualisation de la liste impossible.");
+    }
+
+    const updatedWorkers: InterimWorker[] = await listResponse.json();
+    setInterimWorkers(updatedWorkers);
+    setInterimMessage(
+      action === "close"
+        ? `Fiche de ${worker.full_name} clôturée. Le compte ntfy et ses permissions n'ont pas été modifiés.`
+        : "Décision enregistrée."
+    );
+  } catch (error) {
+    setInterimError(error instanceof Error ? error.message : "Erreur pendant l'action.");
+  } finally {
+    setInterimActionLoading(false);
+  }
+}
 
 async function handleSavePhone(event: React.FormEvent<HTMLFormElement>) {
   event.preventDefault();
@@ -800,8 +1189,8 @@ async function handleChangeAccountPassword(
                <Metric
   icon={<Smartphone />}
   label="Téléphones"
-  value="Non recensés"
-  note="Inventaire des appareils à créer"
+  value={String(phones.length)}
+  note={`${activePhonesCount} actifs · ${disabledPhonesCount} désactivés`}
 />
 
 <Metric
@@ -873,7 +1262,11 @@ async function handleChangeAccountPassword(
 
 <span
   className={`service-state ${
-    ntfyStatus === "online" ? "" : "pending"
+    ntfyStatus === "online"
+      ? "online"
+      : ntfyStatus === "checking"
+        ? "pending"
+        : "offline"
   }`}
 >
   {ntfyStatus === "checking"
@@ -1415,10 +1808,425 @@ async function handleChangeAccountPassword(
 		</>
               )}
             </section>
+          ) : active === "Intérimaires" ? (
+            <section className="panel phone-inventory-panel interim-panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Gestion des intérimaires</h2>
+                  <p>Suivi des missions et des échéances des comptes ntfy associés.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingInterimWorkerId(null);
+                    setInterimFullName("");
+                    setInterimUsername("");
+                    setInterimStartDate("");
+                    setInterimEndDate("");
+                    setInterimPhoneIds([]);
+                    setInterimMessage("");
+                    setInterimError("");
+                    setShowInterimForm(true);
+                  }}
+                >
+                  Ajouter un intérimaire
+                </button>
+              </div>
+
+              {interimError && <p role="alert">{interimError}</p>}
+              {interimMessage && <p role="status">{interimMessage}</p>}
+
+              {showInterimForm && (
+                <form
+                  className="account-form"
+                  onSubmit={editingInterimWorkerId ? handleUpdateInterimWorker : handleSaveInterimWorker}
+                >
+                  <h3>{editingInterimWorkerId ? "Modifier la fiche intérimaire" : "Nouvel intérimaire"}</h3>
+
+                  <label>
+                    Nom complet
+                    <input
+                      type="text"
+                      value={interimFullName}
+                      onChange={(event) => setInterimFullName(event.target.value)}
+                      maxLength={150}
+                      required
+                    />
+                  </label>
+
+                  {!editingInterimWorkerId && (
+                    <label>
+                      Nom d’utilisateur ntfy existant
+                      <input
+                        type="text"
+                        value={interimUsername}
+                        onChange={(event) => setInterimUsername(event.target.value)}
+                        maxLength={32}
+                        pattern="[a-zA-Z0-9_-]+"
+                        required
+                      />
+                    </label>
+                  )}
+
+                  <label>
+                    Date de début
+                    <input
+                      type="date"
+                      value={interimStartDate}
+                      onChange={(event) => setInterimStartDate(event.target.value)}
+                      required
+                    />
+                  </label>
+
+                  <label>
+                    Date de fin
+                    <input
+                      type="date"
+                      value={interimEndDate}
+                      min={interimStartDate || undefined}
+                      onChange={(event) => setInterimEndDate(event.target.value)}
+                      required
+                    />
+                  </label>
+
+                  <fieldset>
+                    <legend>Téléphones associés</legend>
+                    {phones.length === 0 ? (
+                      <p>Aucun téléphone dans l’inventaire.</p>
+                    ) : (
+                      phones.map((phone) => (
+                        <label key={phone.phone_id}>
+                          <input
+                            type="checkbox"
+                            checked={interimPhoneIds.includes(phone.phone_id)}
+                            onChange={(event) => {
+                              setInterimPhoneIds((current) =>
+                                event.target.checked
+                                  ? [...current, phone.phone_id]
+                                  : current.filter((id) => id !== phone.phone_id)
+                              );
+                            }}
+                          />
+                          {phone.phone_id} — {phone.name}
+                        </label>
+                      ))
+                    )}
+                  </fieldset>
+
+                  <div className="form-actions">
+                    <button type="submit" disabled={interimActionLoading}>
+                      {interimActionLoading
+                        ? "Enregistrement…"
+                        : editingInterimWorkerId
+                          ? "Enregistrer les modifications"
+                          : "Créer la fiche"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={interimActionLoading}
+                      onClick={() => {
+                        setShowInterimForm(false);
+                        setEditingInterimWorkerId(null);
+                      }}
+                    >
+                      Annuler
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {interimLoading ? (
+                <p>Chargement des intérimaires…</p>
+              ) : interimWorkers.length === 0 ? (
+                <p>Aucune fiche intérimaire enregistrée pour le moment.</p>
+              ) : (
+                <div className="table-container">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Nom</th>
+                        <th>Compte ntfy</th>
+                        <th>Début</th>
+                        <th>Fin</th>
+                        <th>Téléphones</th>
+                        <th>Échéance</th>
+                        <th>Décision</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {interimWorkers.map((worker) => (
+                        <tr key={worker.id}>
+                          <td>{worker.full_name}</td>
+                          <td>{worker.ntfy_username}</td>
+                          <td>{worker.start_date}</td>
+                          <td>{worker.end_date}</td>
+                          <td>
+                            {worker.phones.length
+                              ? worker.phones.map((phone) => phone.phone_id).join(", ")
+                              : "—"}
+                          </td>
+                          <td>
+                            {worker.alert === "overdue"
+                              ? "Échéance dépassée"
+                              : worker.alert === "due_today"
+                                ? "Échéance aujourd’hui"
+                                : worker.alert === "closed"
+                                  ? "Fiche clôturée"
+                                  : "En cours"}
+                          </td>
+                          <td>
+                            {worker.decision === "extended"
+                              ? "Prolongation enregistrée"
+                              : worker.decision === "keep_access"
+                                ? "Accès conservé"
+                                : worker.decision === "access_reviewed"
+                                  ? "Accès réexaminé"
+                                  : "À examiner"}
+                            {worker.decision_note && <p>{worker.decision_note}</p>}
+                          </td>
+                          <td>
+                            {worker.status === "closed" ? (
+                              <span>Fiche clôturée</span>
+                            ) : (
+                              <div className="form-actions">
+                                <button
+                                  type="button"
+                                  disabled={interimActionLoading}
+                                  onClick={() => handleEditInterimWorker(worker)}
+                                >
+                                  Modifier la fiche
+                                </button>
+                                <label>
+                                  Décision
+                                  <select
+                                    value={interimDecisionChoices[worker.id] ?? worker.decision}
+                                    disabled={interimActionLoading}
+                                    onChange={(event) =>
+                                      setInterimDecisionChoices((current) => ({
+                                        ...current,
+                                        [worker.id]: event.target.value as InterimWorker["decision"],
+                                      }))
+                                    }
+                                  >
+                                    <option value="pending">À examiner</option>
+                                    <option value="extended">Prolongation</option>
+                                    <option value="access_reviewed">Accès réexaminé</option>
+                                    <option value="keep_access">Conserver l’accès</option>
+                                  </select>
+                                </label>
+                                <label>
+                                  Note
+                                  <input
+                                    value={interimDecisionNotes[worker.id] ?? ""}
+                                    disabled={interimActionLoading}
+                                    onChange={(event) =>
+                                      setInterimDecisionNotes((current) => ({
+                                        ...current,
+                                        [worker.id]: event.target.value,
+                                      }))
+                                    }
+                                    maxLength={1000}
+                                    placeholder="Note facultative"
+                                  />
+                                </label>
+                                <button
+                                  type="button"
+                                  disabled={interimActionLoading}
+                                  onClick={() =>
+                                    void handleInterimAction(
+                                      worker,
+                                      "decision",
+                                      interimDecisionChoices[worker.id] ?? worker.decision
+                                    )
+                                  }
+                                >
+                                  Enregistrer
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={interimActionLoading}
+                                  onClick={() => void handleInterimAction(worker, "close")}
+                                >
+                                  Clôturer la mission
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          ) : active === "Historique" ? (
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Historique des opérations</h2>
+                  <p>Les 100 événements les plus récents enregistrés par l’application</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActive("Vue d’ensemble")}
+                >
+                  Retour
+                </button>
+              </div>
+
+              {auditLoading ? (
+                <p>Chargement de l’historique…</p>
+              ) : auditError ? (
+                <p role="alert">{auditError}</p>
+              ) : auditEvents.length === 0 ? (
+                <p>Aucun événement enregistré pour le moment.</p>
+              ) : (
+                <div className="table-wrapper">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Utilisateur</th>
+                        <th>Action</th>
+                        <th>Cible</th>
+                        <th>Détails</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {auditEvents.map((event) => (
+                        <tr key={event.id}>
+                          <td>{new Date(event.created_at).toLocaleString("fr-FR")}</td>
+                          <td>{event.actor_username}</td>
+                          <td>{event.action}</td>
+                          <td>
+                            {[event.target_type, event.target_id]
+                              .filter(Boolean)
+                              .join(" · ") || "—"}
+                          </td>
+                          <td>{event.details_json || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          ) : active === "Notifications" ? (
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Préparer une notification</h2>
+                  <p>Choisissez les téléphones actifs et vérifiez le message avant tout envoi.</p>
+                </div>
+              </div>
+
+              {phonesLoading ? (
+                <p>Chargement des téléphones…</p>
+              ) : phonesError ? (
+                <p role="alert">{phonesError}</p>
+              ) : (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    setNotificationPreview(true);
+                  }}
+                >
+                  <fieldset>
+                    <legend>Destinataires ({notificationRecipients.length} sélectionnés)</legend>
+                    <div className="notification-recipient-list">
+                      {phones.filter((phone) => phone.status === "active").map((phone) => (
+                        <label key={phone.phone_id}>
+                          <input
+                            type="checkbox"
+                            checked={notificationRecipients.includes(phone.phone_id)}
+                            onChange={(event) => {
+                              setNotificationPreview(false);
+                              setNotificationRecipients((current) =>
+                                event.target.checked
+                                  ? [...current, phone.phone_id]
+                                  : current.filter((id) => id !== phone.phone_id)
+                              );
+                            }}
+                          />
+                          {phone.name} ({phone.phone_id})
+                        </label>
+                      ))}
+                    </div>
+                    {phones.filter((phone) => phone.status === "active").length === 0 && (
+                      <p>Aucun téléphone actif enregistré.</p>
+                    )}
+                  </fieldset>
+
+                  <label htmlFor="notification-title">Titre</label>
+                  <input
+                    id="notification-title"
+                    value={notificationTitle}
+                    maxLength={120}
+                    required
+                    onChange={(event) => {
+                      setNotificationTitle(event.target.value);
+                      setNotificationPreview(false);
+                    }}
+                  />
+
+                  <label htmlFor="notification-body">Message</label>
+                  <textarea
+                    id="notification-body"
+                    value={notificationBody}
+                    rows={5}
+                    maxLength={4000}
+                    required
+                    onChange={(event) => {
+                      setNotificationBody(event.target.value);
+                      setNotificationPreview(false);
+                    }}
+                  />
+
+                  <button
+                    type="submit"
+                    className="add-account-button"
+                    disabled={notificationRecipients.length === 0 || !notificationTitle.trim() || !notificationBody.trim()}
+                  >
+                    Prévisualiser
+                  </button>
+                </form>
+              )}
+
+              {notificationPreview && (
+                <div className="notification-preview" aria-live="polite">
+                  <h3>Aperçu — aucun message envoyé</h3>
+                  <p><strong>Destinataires :</strong> {notificationRecipients.map((id) => {
+                    const phone = phones.find((item) => item.phone_id === id);
+                    return phone ? `${phone.name} (${phone.phone_id})` : id;
+                  }).join(", ")}</p>
+                  <p><strong>Titre :</strong> {notificationTitle}</p>
+                  <p><strong>Message :</strong></p>
+                  <p>{notificationBody}</p>
+                  <button
+                    type="button"
+                    onClick={() => setNotificationPreview(false)}
+                    disabled={notificationSending}
+                  >
+                    Modifier le brouillon
+                  </button>
+                  <button
+                    type="button"
+                    className="add-account-button"
+                    onClick={() => void handleSendNotification()}
+                    disabled={notificationSending}
+                  >
+                    {notificationSending ? "Envoi en cours…" : "Envoyer la notification"}
+                  </button>
+                </div>
+              )}
+
+              {notificationResult && (
+                <p role="status" aria-live="polite">{notificationResult}</p>
+              )}
+            </section>
           ) : (
-
             <section className="panel placeholder">
-
               <div className="placeholder-icon"><Menu size={24} /></div>
               <h2>{active}</h2>
               <p>Cette rubrique est prête à être développée.</p>

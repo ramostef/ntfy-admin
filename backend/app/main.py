@@ -2,8 +2,10 @@ import os
 import subprocess
 import re
 import json
-from urllib.error import URLError
-from urllib.request import urlopen
+import base64
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request as URLRequest, urlopen
 
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -405,6 +407,12 @@ class PhoneUpdate(BaseModel):
     notes: str | None = Field(default=None, max_length=1000)
 
 
+class NotificationSend(BaseModel):
+    recipients: list[str] = Field(min_length=1, max_length=50)
+    title: str = Field(min_length=1, max_length=120)
+    body: str = Field(min_length=1, max_length=4000)
+
+
 @app.get("/phones")
 def list_phones(_admin: bool = Depends(require_admin)):
     with get_connection() as connection:
@@ -555,3 +563,442 @@ def delete_phone(
             )
 
     return {"ok": True, "message": "Téléphone retiré de l’inventaire"}
+
+
+
+@app.post("/notifications/send")
+def send_notification(
+    data: NotificationSend,
+    _admin: bool = Depends(require_admin),
+):
+    recipients = [item.strip() for item in data.recipients]
+    title = data.title.strip()
+    body = data.body.strip()
+
+    if not title or not body:
+        raise HTTPException(status_code=422, detail="Titre et message obligatoires")
+    if any(not re.fullmatch(r"tel-[0-9]{3}", item) for item in recipients):
+        raise HTTPException(status_code=422, detail="Identifiant de téléphone invalide")
+    if len(recipients) != len(set(recipients)):
+        raise HTTPException(status_code=422, detail="Destinataire en double")
+
+    placeholders = ",".join("?" for _ in recipients)
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"SELECT phone_id, status FROM phones WHERE phone_id IN ({placeholders})",
+            recipients,
+        ).fetchall()
+
+    phones = {row["phone_id"]: row["status"] for row in rows}
+    missing = sorted(set(recipients) - set(phones))
+    inactive = sorted(item for item in recipients if phones.get(item) != "active")
+
+    if missing:
+        raise HTTPException(status_code=422, detail="Téléphone(s) introuvable(s)")
+    if inactive:
+        raise HTTPException(status_code=422, detail="Un ou plusieurs téléphones sont inactifs")
+
+    username = os.getenv("NTFY_PUBLISHER_USERNAME")
+    password = os.getenv("NTFY_PUBLISHER_PASSWORD")
+    base_url = os.getenv(
+        "NTFY_BASE_URL", "https://ntfy-pc-home.duckdns.org"
+    ).rstrip("/")
+
+    if not username or not password:
+        raise HTTPException(status_code=503, detail="Compte d'envoi non configuré")
+
+    credentials = base64.b64encode(
+        f"{username}:{password}".encode("utf-8")
+    ).decode("ascii")
+
+    accepted = []
+    failed = []
+
+    for phone_id in recipients:
+        request = URLRequest(
+            f"{base_url}/{phone_id}",
+            data=body.encode("utf-8"),
+            headers={
+                "Authorization": f"Basic {credentials}",
+                "Title": title,
+                "Content-Type": "text/plain; charset=utf-8",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=10) as response:
+                if 200 <= response.status < 300:
+                    accepted.append(phone_id)
+                else:
+                    failed.append({"phone_id": phone_id, "status": response.status})
+        except HTTPError as exc:
+            failed.append({"phone_id": phone_id, "status": exc.code})
+        except (URLError, TimeoutError, OSError, ValueError):
+            failed.append({"phone_id": phone_id, "status": "network_error"})
+
+    if accepted:
+        with get_connection() as connection:
+            for phone_id in accepted:
+                connection.execute(
+                    """
+                    INSERT INTO audit_events
+                        (actor_username, action, target_type, target_id, details_json)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "admin", "notification_sent", "phone", phone_id,
+                        json.dumps(
+                            {"title": title, "delivery": "accepted_by_ntfy"},
+                            ensure_ascii=False,
+                        ),
+                    ),
+                )
+
+    if not accepted:
+        raise HTTPException(
+            status_code=502,
+            detail={"message": "Aucun envoi accepté par ntfy", "failed": failed},
+        )
+
+    return {
+        "ok": not failed,
+        "accepted_count": len(accepted),
+        "failed_count": len(failed),
+        "accepted": accepted,
+        "failed": failed,
+        "message": "Accepté par ntfy" if not failed else "Envoi partiel : vérifiez les résultats",
+    }
+
+
+@app.get("/audit-events")
+def list_audit_events(_admin: bool = Depends(require_admin)):
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, actor_username, action, target_type,
+                   target_id, details_json, created_at
+            FROM audit_events
+            ORDER BY id DESC
+            LIMIT 100
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+# --- Gestion des intérimaires : aucune désactivation ntfy automatique ---
+
+from datetime import date
+
+
+class InterimWorkerCreate(BaseModel):
+    full_name: str = Field(min_length=1, max_length=150)
+    ntfy_username: str = Field(
+        min_length=1, max_length=32, pattern=r"^[a-zA-Z0-9_-]+$"
+    )
+    start_date: date
+    end_date: date
+    phone_ids: list[str] = Field(default_factory=list, max_length=50)
+
+
+class InterimWorkerUpdate(BaseModel):
+    full_name: str = Field(min_length=1, max_length=150)
+    start_date: date
+    end_date: date
+    phone_ids: list[str] = Field(default_factory=list, max_length=50)
+
+
+class InterimWorkerDecision(BaseModel):
+    decision: str = Field(
+        pattern=r"^(pending|extended|access_reviewed|keep_access)$"
+    )
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class InterimWorkerClose(BaseModel):
+    note: str | None = Field(default=None, max_length=1000)
+
+
+def _interim_real_ntfy_usernames() -> set[str]:
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "/usr/local/sbin/ntfy-admin-list-users"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        raise HTTPException(
+            status_code=503,
+            detail="Impossible de vérifier les comptes ntfy",
+        )
+
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=503,
+            detail="Impossible de vérifier les comptes ntfy",
+        )
+
+    return {
+        match.group(1)
+        for line in result.stdout.splitlines()
+        if (match := re.match(
+            r"^user (.+) \(role: ([^,]+), tier: ([^)]+)\)$",
+            line.strip(),
+        ))
+        and match.group(1) != "*"
+    }
+
+
+def _interim_validate_dates(start_date: date, end_date: date) -> None:
+    if end_date < start_date:
+        raise HTTPException(
+            status_code=422,
+            detail="La date de fin doit être égale ou postérieure à la date de début",
+        )
+
+
+def _interim_validate_phones(phone_ids: list[str]) -> list[str]:
+    if len(phone_ids) != len(set(phone_ids)):
+        raise HTTPException(
+            status_code=422,
+            detail="Un téléphone ne peut être associé qu'une seule fois",
+        )
+
+    if any(not re.fullmatch(r"tel-[0-9]{3}", item) for item in phone_ids):
+        raise HTTPException(
+            status_code=422,
+            detail="Identifiant de téléphone invalide",
+        )
+
+    if phone_ids:
+        placeholders = ",".join("?" for _ in phone_ids)
+        with get_connection() as connection:
+            rows = connection.execute(
+                f"SELECT phone_id FROM phones WHERE phone_id IN ({placeholders})",
+                phone_ids,
+            ).fetchall()
+        found = {row["phone_id"] for row in rows}
+        missing = sorted(set(phone_ids) - found)
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail="Téléphone(s) introuvable(s) : " + ", ".join(missing),
+            )
+
+    return phone_ids
+
+
+def _interim_audit(connection, action: str, worker_id: int, details: dict) -> None:
+    connection.execute(
+        """
+        INSERT INTO audit_events
+            (actor_username, action, target_type, target_id, details_json)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        ("admin", action, "interim_worker", str(worker_id),
+         json.dumps(details, ensure_ascii=False)),
+    )
+
+
+def _interim_get_worker(connection, worker_id: int):
+    row = connection.execute(
+        """
+        SELECT id, full_name, ntfy_username, start_date, end_date,
+               status, decision, decision_note, created_at, updated_at
+        FROM interim_workers WHERE id = ?
+        """,
+        (worker_id,),
+    ).fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Fiche intérimaire introuvable")
+
+    worker = dict(row)
+    phone_rows = connection.execute(
+        """
+        SELECT p.phone_id, p.name, p.status
+        FROM interim_worker_phones wp
+        JOIN phones p ON p.phone_id = wp.phone_id
+        WHERE wp.worker_id = ?
+        ORDER BY p.phone_id
+        """,
+        (worker_id,),
+    ).fetchall()
+    worker["phones"] = [dict(phone) for phone in phone_rows]
+
+    today = date.today().isoformat()
+    worker["alert"] = (
+        "overdue" if worker["status"] == "active" and worker["end_date"] < today
+        else "due_today" if worker["status"] == "active" and worker["end_date"] == today
+        else "upcoming" if worker["status"] == "active" and worker["end_date"] > today
+        else "closed"
+    )
+    return worker
+
+
+@app.get("/interim-workers")
+def list_interim_workers(_admin: bool = Depends(require_admin)):
+    with get_connection() as connection:
+        ids = connection.execute(
+            "SELECT id FROM interim_workers ORDER BY end_date, full_name"
+        ).fetchall()
+        return [_interim_get_worker(connection, row["id"]) for row in ids]
+
+
+@app.post("/interim-workers", status_code=201)
+def create_interim_worker(
+    data: InterimWorkerCreate,
+    _admin: bool = Depends(require_admin),
+):
+    full_name = data.full_name.strip()
+    username = data.ntfy_username.strip()
+    if not full_name:
+        raise HTTPException(status_code=422, detail="Le nom est obligatoire")
+
+    _interim_validate_dates(data.start_date, data.end_date)
+    phone_ids = _interim_validate_phones(data.phone_ids)
+
+    if username not in _interim_real_ntfy_usernames():
+        raise HTTPException(
+            status_code=422,
+            detail="Ce nom d'utilisateur n'existe pas dans les comptes ntfy réels",
+        )
+
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO interim_workers
+                (full_name, ntfy_username, start_date, end_date)
+            VALUES (?, ?, ?, ?)
+            """,
+            (full_name, username, data.start_date.isoformat(), data.end_date.isoformat()),
+        )
+        worker_id = cursor.lastrowid
+
+        for phone_id in phone_ids:
+            connection.execute(
+                "INSERT INTO interim_worker_phones (worker_id, phone_id) VALUES (?, ?)",
+                (worker_id, phone_id),
+            )
+
+        _interim_audit(connection, "interim_worker_created", worker_id, {
+            "ntfy_username": username,
+            "start_date": data.start_date.isoformat(),
+            "end_date": data.end_date.isoformat(),
+            "phone_ids": phone_ids,
+        })
+        return _interim_get_worker(connection, worker_id)
+
+
+@app.put("/interim-workers/{worker_id}")
+def update_interim_worker(
+    worker_id: int,
+    data: InterimWorkerUpdate,
+    _admin: bool = Depends(require_admin),
+):
+    full_name = data.full_name.strip()
+    if not full_name:
+        raise HTTPException(status_code=422, detail="Le nom est obligatoire")
+
+    _interim_validate_dates(data.start_date, data.end_date)
+    phone_ids = _interim_validate_phones(data.phone_ids)
+
+    with get_connection() as connection:
+        existing = connection.execute(
+            "SELECT id FROM interim_workers WHERE id = ?", (worker_id,)
+        ).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Fiche intérimaire introuvable")
+
+        connection.execute(
+            """
+            UPDATE interim_workers
+            SET full_name = ?, start_date = ?, end_date = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (full_name, data.start_date.isoformat(), data.end_date.isoformat(), worker_id),
+        )
+        connection.execute(
+            "DELETE FROM interim_worker_phones WHERE worker_id = ?", (worker_id,)
+        )
+        for phone_id in phone_ids:
+            connection.execute(
+                "INSERT INTO interim_worker_phones (worker_id, phone_id) VALUES (?, ?)",
+                (worker_id, phone_id),
+            )
+
+        _interim_audit(connection, "interim_worker_updated", worker_id, {
+            "start_date": data.start_date.isoformat(),
+            "end_date": data.end_date.isoformat(),
+            "phone_ids": phone_ids,
+        })
+        return _interim_get_worker(connection, worker_id)
+
+
+@app.post("/interim-workers/{worker_id}/close")
+def close_interim_worker(
+    worker_id: int,
+    data: InterimWorkerClose,
+    _admin: bool = Depends(require_admin),
+):
+    note = data.note.strip() if data.note and data.note.strip() else None
+
+    with get_connection() as connection:
+        existing = connection.execute(
+            "SELECT id, status FROM interim_workers WHERE id = ?",
+            (worker_id,),
+        ).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Fiche intérimaire introuvable")
+        if existing["status"] == "closed":
+            raise HTTPException(status_code=409, detail="Cette fiche est déjà clôturée")
+
+        connection.execute(
+            """
+            UPDATE interim_workers
+            SET status = 'closed',
+                decision_note = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (note, worker_id),
+        )
+        _interim_audit(connection, "interim_worker_closed", worker_id, {
+            "note": note,
+        })
+        return _interim_get_worker(connection, worker_id)
+
+
+@app.post("/interim-workers/{worker_id}/decision")
+def decide_interim_worker(
+    worker_id: int,
+    data: InterimWorkerDecision,
+    _admin: bool = Depends(require_admin),
+):
+    note = data.note.strip() if data.note and data.note.strip() else None
+
+    with get_connection() as connection:
+        existing = connection.execute(
+            "SELECT id, status, decision FROM interim_workers WHERE id = ?",
+            (worker_id,),
+        ).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Fiche intérimaire introuvable")
+
+        new_status = existing["status"]
+        connection.execute(
+            """
+            UPDATE interim_workers
+            SET decision = ?, decision_note = ?, status = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (data.decision, note, new_status, worker_id),
+        )
+        _interim_audit(connection, "interim_worker_decision", worker_id, {
+            "decision": data.decision,
+            "note": note,
+        })
+        return _interim_get_worker(connection, worker_id)
