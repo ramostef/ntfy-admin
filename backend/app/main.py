@@ -718,6 +718,15 @@ class InterimWorkerClose(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
 
 
+class InterimWorkerProfileUpdate(BaseModel):
+    sectors: list[str] = Field(default_factory=list, max_length=10)
+    skills: list[str] = Field(default_factory=list, max_length=50)
+    qualifications: list[str] = Field(default_factory=list, max_length=30)
+    experience_text: str = Field(default="", max_length=3000)
+    mobility_area: str = Field(default="", max_length=200)
+    mobility_km: int | None = Field(default=None, ge=0, le=1000)
+
+
 def _interim_real_ntfy_usernames() -> set[str]:
     try:
         result = subprocess.run(
@@ -835,6 +844,109 @@ def _interim_get_worker(connection, worker_id: int):
         else "closed"
     )
     return worker
+
+
+@app.get("/interim-workers/{worker_id}/profile")
+def get_interim_worker_profile(
+    worker_id: int,
+    _admin: bool = Depends(require_admin),
+):
+    with get_connection() as connection:
+        worker = connection.execute(
+            "SELECT id FROM interim_workers WHERE id = ?", (worker_id,)
+        ).fetchone()
+        if worker is None:
+            raise HTTPException(status_code=404, detail="Fiche intérimaire introuvable")
+
+        connection.execute(
+            "INSERT OR IGNORE INTO interim_worker_profiles (worker_id) VALUES (?)",
+            (worker_id,),
+        )
+        row = connection.execute(
+            "SELECT * FROM interim_worker_profiles WHERE worker_id = ?",
+            (worker_id,),
+        ).fetchone()
+
+    profile = dict(row)
+    profile["sectors"] = json.loads(profile.pop("sectors_json"))
+    profile["skills"] = json.loads(profile.pop("skills_json"))
+    profile["qualifications"] = json.loads(profile.pop("qualifications_json"))
+    return profile
+
+
+@app.put("/interim-workers/{worker_id}/profile")
+def update_interim_worker_profile(
+    worker_id: int,
+    data: InterimWorkerProfileUpdate,
+    _admin: bool = Depends(require_admin),
+):
+    def clean_items(items: list[str], field_name: str) -> list[str]:
+        cleaned = []
+        for item in items:
+            value = item.strip()
+            if len(value) > 100:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Chaque élément de {field_name} doit faire 100 caractères maximum",
+                )
+            if value and value not in cleaned:
+                cleaned.append(value)
+        return cleaned
+
+    sectors = clean_items(data.sectors, "secteurs")
+    skills = clean_items(data.skills, "compétences")
+    qualifications = clean_items(data.qualifications, "qualifications")
+    experience_text = data.experience_text.strip()
+    mobility_area = data.mobility_area.strip()
+
+    with get_connection() as connection:
+        worker = connection.execute(
+            "SELECT id FROM interim_workers WHERE id = ?", (worker_id,)
+        ).fetchone()
+        if worker is None:
+            raise HTTPException(status_code=404, detail="Fiche intérimaire introuvable")
+
+        connection.execute(
+            "INSERT OR IGNORE INTO interim_worker_profiles (worker_id) VALUES (?)",
+            (worker_id,),
+        )
+        connection.execute(
+            """
+            UPDATE interim_worker_profiles
+            SET sectors_json = ?,
+                skills_json = ?,
+                qualifications_json = ?,
+                experience_text = ?,
+                mobility_area = ?,
+                mobility_km = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE worker_id = ?
+            """,
+            (
+                json.dumps(sectors, ensure_ascii=False),
+                json.dumps(skills, ensure_ascii=False),
+                json.dumps(qualifications, ensure_ascii=False),
+                experience_text,
+                mobility_area,
+                data.mobility_km,
+                worker_id,
+            ),
+        )
+        _interim_audit(connection, "interim_worker_profile_updated", worker_id, {
+            "sector_count": len(sectors),
+            "skill_count": len(skills),
+            "qualification_count": len(qualifications),
+        })
+        row = connection.execute(
+            "SELECT * FROM interim_worker_profiles WHERE worker_id = ?",
+            (worker_id,),
+        ).fetchone()
+
+    profile = dict(row)
+    profile["sectors"] = json.loads(profile.pop("sectors_json"))
+    profile["skills"] = json.loads(profile.pop("skills_json"))
+    profile["qualifications"] = json.loads(profile.pop("qualifications_json"))
+    return profile
 
 
 @app.get("/interim-workers")

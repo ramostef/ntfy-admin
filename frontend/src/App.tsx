@@ -206,6 +206,12 @@ const [interimUsername, setInterimUsername] = useState("");
 const [interimStartDate, setInterimStartDate] = useState("");
 const [interimEndDate, setInterimEndDate] = useState("");
 const [interimPhoneIds, setInterimPhoneIds] = useState<string[]>([]);
+const [profileSectors, setProfileSectors] = useState<string[]>([]);
+const [profileSkills, setProfileSkills] = useState("");
+const [profileQualifications, setProfileQualifications] = useState("");
+const [profileExperience, setProfileExperience] = useState("");
+const [profileMobilityArea, setProfileMobilityArea] = useState("");
+const [profileMobilityKm, setProfileMobilityKm] = useState("");
 
 const [phoneSearch, setPhoneSearch] = useState("");
 const [phoneStatusFilter, setPhoneStatusFilter] = useState<"all" | "active" | "disabled">("all");
@@ -638,16 +644,67 @@ async function checkNtfy() {
 }
 
 
-function handleEditInterimWorker(worker: InterimWorker) {
-  setEditingInterimWorkerId(worker.id);
-  setInterimFullName(worker.full_name);
-  setInterimUsername(worker.ntfy_username);
-  setInterimStartDate(worker.start_date);
-  setInterimEndDate(worker.end_date);
-  setInterimPhoneIds(worker.phones.map((phone) => phone.phone_id));
+async function handleEditInterimWorker(worker: InterimWorker) {
   setInterimError("");
   setInterimMessage("");
-  setShowInterimForm(true);
+
+  try {
+    const response = await fetch(
+      `/api/interim-workers/${worker.id}/profile`,
+      { cache: "no-store" }
+    );
+    const profile = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(profile.detail || "Chargement du profil impossible.");
+    }
+
+    setEditingInterimWorkerId(worker.id);
+    setInterimFullName(worker.full_name);
+    setInterimUsername(worker.ntfy_username);
+    setInterimStartDate(worker.start_date);
+    setInterimEndDate(worker.end_date);
+    setInterimPhoneIds(worker.phones.map((phone) => phone.phone_id));
+    setProfileSectors(profile.sectors ?? []);
+    setProfileSkills((profile.skills ?? []).join(", "));
+    setProfileQualifications((profile.qualifications ?? []).join(", "));
+    setProfileExperience(profile.experience_text ?? "");
+    setProfileMobilityArea(profile.mobility_area ?? "");
+    setProfileMobilityKm(
+      profile.mobility_km == null ? "" : String(profile.mobility_km)
+    );
+    setShowInterimForm(true);
+  } catch (error) {
+    setInterimError(
+      error instanceof Error ? error.message : "Erreur de chargement du profil."
+    );
+  }
+}
+
+async function saveInterimWorkerProfile(workerId: number) {
+  const splitItems = (value: string) =>
+    value.split(",").map((item) => item.trim()).filter(Boolean);
+
+  const response = await fetch(
+    `/api/interim-workers/${workerId}/profile`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sectors: profileSectors,
+        skills: splitItems(profileSkills),
+        qualifications: splitItems(profileQualifications),
+        experience_text: profileExperience,
+        mobility_area: profileMobilityArea,
+        mobility_km: profileMobilityKm === "" ? null : Number(profileMobilityKm),
+      }),
+    }
+  );
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.detail || "Enregistrement du profil impossible.");
+  }
 }
 
 async function handleUpdateInterimWorker(event: React.FormEvent<HTMLFormElement>) {
@@ -684,6 +741,8 @@ async function handleUpdateInterimWorker(event: React.FormEvent<HTMLFormElement>
     if (!response.ok) {
       throw new Error(data.detail || "Modification de la fiche impossible.");
     }
+
+    await saveInterimWorkerProfile(editingInterimWorkerId);
 
     const listResponse = await fetch("/api/interim-workers", { cache: "no-store" });
     if (!listResponse.ok) {
@@ -736,6 +795,14 @@ async function handleSaveInterimWorker(event: React.FormEvent<HTMLFormElement>) 
       throw new Error(data.detail || "Création de la fiche impossible.");
     }
 
+    if (!Number.isInteger(data.id) || data.id <= 0) {
+      throw new Error(
+        "Fiche créée, mais son identifiant est absent : profil non enregistré."
+      );
+    }
+
+    await saveInterimWorkerProfile(data.id);
+
     const listResponse = await fetch("/api/interim-workers", {
       cache: "no-store",
     });
@@ -751,7 +818,13 @@ async function handleSaveInterimWorker(event: React.FormEvent<HTMLFormElement>) 
     setInterimStartDate("");
     setInterimEndDate("");
     setInterimPhoneIds([]);
-    setInterimMessage("Fiche intérimaire créée.");
+    setProfileSectors([]);
+    setProfileSkills("");
+    setProfileQualifications("");
+    setProfileExperience("");
+    setProfileMobilityArea("");
+    setProfileMobilityKm("");
+    setInterimMessage("Fiche intérimaire et profil professionnel enregistrés.");
   } catch (error) {
     setInterimError(
       error instanceof Error ? error.message : "Erreur pendant la création."
@@ -1911,6 +1984,83 @@ async function handleChangeAccountPassword(
                         </label>
                       ))
                     )}
+                  </fieldset>
+
+                  <fieldset>
+                    <legend>Profil professionnel</legend>
+
+                    <p>Secteurs d’activité</p>
+                    {["Ménage", "Restauration", "Logistique", "Santé", "Bâtiment"].map((sector) => (
+                      <label key={sector}>
+                        <input
+                          type="checkbox"
+                          checked={profileSectors.includes(sector)}
+                          onChange={(event) =>
+                            setProfileSectors((current) =>
+                              event.target.checked
+                                ? [...current, sector]
+                                : current.filter((item) => item !== sector)
+                            )
+                          }
+                        />
+                        {sector}
+                      </label>
+                    ))}
+
+                    <label>
+                      Compétences (séparées par des virgules)
+                      <input
+                        type="text"
+                        value={profileSkills}
+                        onChange={(event) => setProfileSkills(event.target.value)}
+                        maxLength={3000}
+                        placeholder="Ex. préparation, nettoyage, manutention"
+                      />
+                    </label>
+
+                    <label>
+                      Qualifications et certifications (séparées par des virgules)
+                      <input
+                        type="text"
+                        value={profileQualifications}
+                        onChange={(event) => setProfileQualifications(event.target.value)}
+                        maxLength={3000}
+                        placeholder="Ex. diplôme, habilitation, certification"
+                      />
+                    </label>
+
+                    <label>
+                      Expérience professionnelle
+                      <textarea
+                        value={profileExperience}
+                        onChange={(event) => setProfileExperience(event.target.value)}
+                        maxLength={3000}
+                        rows={4}
+                        placeholder="Décrire les expériences pertinentes"
+                      />
+                    </label>
+
+                    <label>
+                      Zone de mobilité
+                      <input
+                        type="text"
+                        value={profileMobilityArea}
+                        onChange={(event) => setProfileMobilityArea(event.target.value)}
+                        maxLength={200}
+                        placeholder="Ex. Pau et alentours"
+                      />
+                    </label>
+
+                    <label>
+                      Distance maximale (km)
+                      <input
+                        type="number"
+                        min={0}
+                        max={1000}
+                        value={profileMobilityKm}
+                        onChange={(event) => setProfileMobilityKm(event.target.value)}
+                      />
+                    </label>
                   </fieldset>
 
                   <div className="form-actions">

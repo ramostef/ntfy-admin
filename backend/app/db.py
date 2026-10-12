@@ -133,4 +133,28 @@ def initialize_database():
             ON interim_worker_phones(worker_id)
         """)
 
+
+        # Profil professionnel : séparé du suivi administratif ntfy.
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS interim_worker_profiles (
+                worker_id INTEGER PRIMARY KEY,
+                sectors_json TEXT NOT NULL DEFAULT '[]',
+                skills_json TEXT NOT NULL DEFAULT '[]',
+                qualifications_json TEXT NOT NULL DEFAULT '[]',
+                experience_text TEXT NOT NULL DEFAULT '',
+                mobility_area TEXT NOT NULL DEFAULT '',
+                mobility_km INTEGER,
+                updated_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                FOREIGN KEY (worker_id)
+                    REFERENCES interim_workers(id) ON DELETE CASCADE
+            )
+        """)
+
+        # Crée un profil vide pour chaque intérimaire déjà enregistré.
+        connection.execute("""
+            INSERT OR IGNORE INTO interim_worker_profiles (worker_id)
+            SELECT id FROM interim_workers
+        """)
+
         connection.commit()
