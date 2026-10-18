@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#216c50">
+  <meta name="referrer" content="no-referrer">
+  <title>Répondre à une proposition · RMS</title>
+  <style>
+    :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#202b27;background:#f5f8f5;font-synthesis:none}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px}
+    main{width:min(100%,520px);background:#fff;border:1px solid #e3eae4;border-radius:18px;padding:28px;box-shadow:0 16px 44px #1d38240c}
+    .brand{color:#216c50;font-weight:800;letter-spacing:.04em;font-size:13px}.eyebrow{margin:22px 0 7px;color:#216c50;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}
+    h1{font-size:25px;line-height:1.2;margin:0 0 8px}p{color:#68746d;line-height:1.55;margin:8px 0}
+    .mission{margin:22px 0;padding:16px;background:#f7faf7;border:1px solid #e8eee8;border-radius:12px}
+    .mission strong{display:block;font-size:17px;margin-bottom:5px}.meta{font-size:14px}.notice{margin:18px 0;padding:12px 14px;border-radius:10px;background:#eef5ee;color:#42624d;font-size:13px;line-height:1.5}
+    .actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:22px}.actions button{min-height:48px;border:0;border-radius:10px;font:inherit;font-weight:700;cursor:pointer}
+    button:disabled{opacity:.55;cursor:wait}.accept{background:#216c50;color:#fff}.decline{background:#f1f3f1;color:#39443d}.status{min-height:24px;margin-top:14px;font-size:14px;font-weight:600}.small{font-size:12px;color:#7a847e;margin-top:16px}
+    @media(max-width:420px){main{padding:22px 18px}h1{font-size:22px}.actions{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">RMS · PROPOSITION DE MISSION</div>
+    <div class="eyebrow">Réponse intérimaire</div>
+    <h1 id="heading">Chargement de la proposition…</h1>
+    <p id="intro">Vérification du lien sécurisé.</p>
+    <section class="mission" id="mission" hidden>
+      <strong id="mission-title"></strong>
+      <div class="meta" id="mission-client"></div>
+      <div class="meta" id="mission-location"></div>
+      <div class="meta" id="mission-dates"></div>
+    </section>
+    <div class="notice" id="contract-note" hidden></div>
+    <div class="actions" id="actions" hidden>
+      <button class="accept" id="accept">Accepter la mission</button>
+      <button class="decline" id="decline">Refuser</button>
+    </div>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
+    <p class="small">Ce lien personnel expire après 48 heures. Si vous n’êtes pas la personne concernée, ignorez ce message et contactez l’agence.</p>
+  </main>
+  <script>
+    const token = new URLSearchParams(location.search).get('token') || '';
+    const $ = (id) => document.getElementById(id);
+    const api = async (method, body) => {
+      const url = `/api/mission-invitations/respond?token=${encodeURIComponent(token)}`;
+      const response = await fetch(url, {method, cache:'no-store', headers:body?{'Content-Type':'application/json'}:{}, body:body?JSON.stringify(body):undefined, credentials:'omit', referrerPolicy:'no-referrer'});
+      const data = await response.json().catch(()=>({}));
+      if (!response.ok) throw new Error(data.detail || 'Impossible de traiter ce lien.');
+      return data;
+    };
+    const date = (value) => {
+      if (!value) return 'Date à préciser';
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? value : new Intl.DateTimeFormat('fr-FR',{dateStyle:'medium'}).format(parsed);
+    };
+    function lockActions(){ $('accept').disabled = true; $('decline').disabled = true; }
+    async function respond(decision){
+      lockActions(); $('status').textContent = 'Enregistrement de votre réponse…';
+      try {
+        const result = await api('POST',{decision});
+        $('heading').textContent = decision === 'accepted' ? 'Mission acceptée' : 'Réponse enregistrée';
+        $('intro').textContent = result.message;
+        $('status').textContent = decision === 'accepted' && result.contract_sent ? 'Le contrat est envoyé par e-mail aux signataires.' : '';
+        $('actions').hidden = true;
+      } catch(error) { $('status').textContent = error.message; $('accept').disabled = false; $('decline').disabled = false; }
+    }
+    $('accept').addEventListener('click',()=>respond('accepted'));
+    $('decline').addEventListener('click',()=>respond('declined'));
+    (async()=>{
+      if (!token) { $('heading').textContent='Lien incomplet'; $('intro').textContent='Le lien de réponse est invalide. Demandez une nouvelle invitation à l’agence.'; return; }
+      try {
+        const data = await api('GET');
+        $('mission-title').textContent = data.mission_title;
+        $('mission-client').textContent = data.client_name ? `Établissement : ${data.client_name}` : '';
+        $('mission-location').textContent = data.location ? `Lieu : ${data.location}` : '';
+        $('mission-dates').textContent = `Du ${date(data.starts_at)} au ${date(data.ends_at)}`;
+        $('mission').hidden = false;
+        if (data.status !== 'pending') {
+          $('heading').textContent = data.status === 'accepted' ? 'Mission déjà acceptée' : 'Réponse déjà enregistrée';
+          $('intro').textContent = data.status === 'declined' ? 'Vous avez déjà refusé cette proposition.' : 'Votre réponse a déjà été enregistrée.';
+          return;
+        }
+        $('heading').textContent = 'Bonjour ' + data.worker_name;
+        $('intro').textContent = 'Souhaitez-vous accepter cette proposition de mission ?';
+        $('contract-note').textContent = data.contract_status === 'ready'
+          ? 'Un contrat est préparé. Après votre acceptation, le responsable RH vérifiera le brouillon avant de l’envoyer aux signataires.'
+          : data.contract_status === 'already_sent'
+            ? 'Le contrat pour cette mission a déjà été envoyé par e-mail.'
+            : data.contract_status === 'review_required'
+              ? 'Plusieurs contrats sont préparés. Après votre acceptation, l’agence devra vérifier lequel envoyer et le valider.'
+              : 'Le contrat n’est pas encore préparé. L’agence pourra vous l’envoyer après votre acceptation.';
+        $('contract-note').hidden = false;
+        $('actions').hidden = false;
+      } catch(error) {
+        $('heading').textContent = 'Lien indisponible';
+        $('intro').textContent = error.message;
+      }
+    })();
+  </script>
+</body>
+</html>

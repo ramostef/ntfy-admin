@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Consulter et signer · RMS</title>
+  <style>
+    :root{font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;color:#202b27;background:#f6f8f5;font-size:15px}*{box-sizing:border-box}body{margin:0}.shell{max-width:900px;margin:0 auto;padding:28px 18px 56px}.brand{font-size:22px;font-weight:800;color:#216c50;margin-bottom:20px}.card{background:#fff;border:1px solid #e8ece8;border-radius:16px;overflow:hidden;box-shadow:0 12px 32px #23372b0b}.head{padding:22px 24px;border-bottom:1px solid #e8ece8}.head h1{font-size:21px;margin:0 0 6px}.muted{color:#75807b;font-size:13px;line-height:1.5}.body{padding:22px 24px}.doc{width:100%;height:min(64vh,720px);border:1px solid #e8ece8;border-radius:10px;background:#f6f8f5;margin:14px 0 22px}.form{border-top:1px solid #e8ece8;padding-top:20px}.form label{display:block;font-size:13px;font-weight:600;margin:12px 0 6px}.form input[type=text]{width:100%;max-width:460px;border:1px solid #d8dfd9;border-radius:8px;padding:11px;font:inherit}.check{display:flex;gap:10px;align-items:flex-start;max-width:680px;font-size:13px;line-height:1.5}.check input{margin-top:3px}.btn{border:0;background:#216c50;color:white;padding:12px 17px;border-radius:9px;font:600 14px inherit;cursor:pointer;margin-top:16px}.btn:disabled{opacity:.55;cursor:wait}.notice{font-size:12px;line-height:1.55;color:#626c66;background:#f5f8f3;border:1px solid #e8ece8;border-radius:9px;padding:12px;margin-top:18px}.msg{font-size:13px;margin-top:12px;color:#ad4b35}.success{font-size:15px;color:#216c50;font-weight:700;background:#edf5ef;border-radius:10px;padding:16px}.hidden{display:none!important}@media(max-width:600px){.shell{padding:16px 12px 32px}.head,.body{padding:18px}.head h1{font-size:19px}.doc{height:55vh}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="brand">RMS<span style="color:#202b27">.</span></div>
+    <section class="card">
+      <header class="head"><h1>Consulter le document</h1><div class="muted" id="subtitle">Vérification de votre invitation…</div></header>
+      <div class="body">
+        <div id="loading" class="muted">Chargement sécurisé du contrat…</div>
+        <div id="content" class="hidden">
+          <p class="muted" id="details"></p>
+          <iframe class="doc" id="document" title="Contrat à consulter" referrerpolicy="no-referrer"></iframe>
+          <form id="sign-form" class="form">
+            <h2 style="font-size:16px;margin:0 0 6px">Confirmer votre signature</h2>
+            <p class="muted">Après lecture complète du document, saisissez votre nom comme indiqué dans l’invitation.</p>
+            <label for="signed-name">Nom complet</label>
+            <input id="signed-name" type="text" autocomplete="name" maxlength="150" required>
+            <label class="check"><input type="checkbox" id="consent" required><span>Je confirme avoir pris connaissance du document affiché et je souhaite enregistrer ma signature électronique pour ce document.</span></label>
+            <button class="btn" id="submit" type="submit">Je signe le document</button>
+            <div id="message" class="msg" role="status"></div>
+          </form>
+          <div id="done" class="success hidden">Votre réponse a déjà été enregistrée.</div>
+          <div class="notice"><b>À propos de ce parcours.</b> RMS enregistre votre nom saisi, votre consentement, l’heure de la réponse et l’empreinte du PDF. Ce prototype ne fournit pas de certificat qualifié et ne prétend pas à lui seul établir le niveau de preuve requis pour chaque contrat. L’agence doit valider juridiquement le procédé avant un usage réel.</div>
+        </div>
+        <div id="error" class="msg hidden"></div>
+      </div>
+    </section>
+  </main>
+<script>
+const token = new URLSearchParams(location.search).get('token') || '';
+history.replaceState({}, document.title, location.pathname);
+const api = async (path, options = {}) => {
+  const response = await fetch('/api' + path, {
+    cache: 'no-store',
+    credentials: 'same-origin',
+    ...options,
+    headers: {'X-RMS-Signature-Token': token, ...(options.headers || {})}
+  });
+  let data = {};
+  try { data = await response.json(); } catch {}
+  if (!response.ok) throw new Error(data.detail || 'Impossible de charger cette invitation.');
+  return data;
+};
+(async () => {
+  const loading = document.getElementById('loading');
+  const error = document.getElementById('error');
+  try {
+    if (!token) throw new Error('Le lien de signature est incomplet. Ouvrez le lien reçu par e-mail.');
+    const details = await api('/contract-signatures/signing-request');
+    document.getElementById('subtitle').textContent = `Bonjour ${details.signer_name} · ${details.signer_role === 'worker' ? 'Intérimaire' : 'Agence'}`;
+    document.getElementById('details').textContent = `Mission : ${details.mission_title} · Document : ${details.filename} · Empreinte SHA-256 : ${details.sha256}`;
+    const pdfResponse = await fetch('/api/contract-signatures/signing-document', {cache:'no-store',headers:{'X-RMS-Signature-Token':token}});
+    if (!pdfResponse.ok) throw new Error('Le document ne peut pas être affiché. Le lien a peut-être expiré.');
+    const pdfUrl = URL.createObjectURL(await pdfResponse.blob());
+    document.getElementById('document').src = pdfUrl;
+    document.getElementById('content').classList.remove('hidden');
+    if (details.status === 'signed') {
+      document.getElementById('sign-form').classList.add('hidden');
+      document.getElementById('done').classList.remove('hidden');
+    } else {
+      document.getElementById('signed-name').value = details.signer_name;
+    }
+  } catch (err) {
+    error.textContent = err.message;
+    error.classList.remove('hidden');
+  } finally { loading.classList.add('hidden'); }
+})();
+document.getElementById('sign-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = document.getElementById('submit');
+  const message = document.getElementById('message');
+  button.disabled = true;
+  message.textContent = 'Enregistrement de votre réponse…';
+  try {
+    await api('/contract-signatures/signing-response', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({signed_name:document.getElementById('signed-name').value.trim(), consent:document.getElementById('consent').checked})
+    });
+    document.getElementById('sign-form').classList.add('hidden');
+    document.getElementById('done').textContent = 'Votre signature a été enregistrée. Vous pouvez fermer cette page.';
+    document.getElementById('done').classList.remove('hidden');
+  } catch (err) { message.textContent = err.message; button.disabled = false; }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "id": "./index.html",
+  "name": "RMS — Missions & talents",
+  "short_name": "RMS",
+  "description": "Missions, profils intérimaires et notifications agence.",
+  "lang": "fr-FR",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f6f8f5",
+  "theme_color": "#216c50",
+  "icons": [
+    { "src": "rms-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

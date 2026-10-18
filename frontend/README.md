@@ -1,75 +1,32 @@
-# React + TypeScript + Vite
+# RMS — Missions & talents
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Front mobile RMS connecté à l’API FastAPI et à la base SQLite déjà utilisée par `/opt/ntfy-admin/backend`.
 
-Currently, two official plugins are available:
+## Parcours
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **Vue d’ensemble** : état des missions, profils et notifications.
+- **Missions** : création d’une fiche, consultation des profils correspondants et notifications aux seuls profils sélectionnés.
+- **Profils** : création et modification des profils dans SQLite, avec sélection des comptes ntfy et des topics enregistrés. Un topic déjà affecté à un autre profil est verrouillé.
 
-## React Compiler
+Les autres écrans d’administration ntfy ne sont plus affichés dans le front RMS. Le backend, sa configuration ntfy et sa base SQLite restent en place.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Lancer en développement
 
-## Expanding the ESLint configuration
+Dans un premier terminal :
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```bash
+cd /opt/ntfy-admin/backend
+source .venv/bin/activate
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
+Au démarrage, le backend initialise les tables et applique les migrations SQLite prévues par le projet.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Dans un second terminal :
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```bash
+cd /opt/ntfy-admin/frontend
+npm run dev -- --host 0.0.0.0 --port 5173
 ```
+
+Ouvrez l’adresse affichée par Vite. Le proxy de développement transmet `/api` au backend sur le port 8000. Le front de production se trouve dans `dist/` et doit être servi derrière le proxy API existant.
